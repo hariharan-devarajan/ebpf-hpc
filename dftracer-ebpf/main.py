@@ -1,5 +1,5 @@
 from __future__ import print_function
-from bcc import ArgString, BPF
+from bcc import ArgString, BPF, USDT
 from bcc.utils import printb
 from time import sleep, strftime
 import argparse
@@ -78,8 +78,8 @@ import pathlib
 dir = pathlib.Path(__file__).parent.resolve()
 print(f"including dir {dir}/src")
 
-EVENT_NAME_MAX=32
-PATH_NAME_MAX=32
+TASK_COMM_LEN=16
+NAME_MAX=256
 
 bpf_header="""
 #include <linux/sched.h>
@@ -87,6 +87,7 @@ bpf_header="""
 #include <uapi/linux/ptrace.h>
 
 BPF_PERF_OUTPUT(events);
+BPF_HASH(pid_map, u32, u32);
 """
 
 bpf_utils = """
@@ -97,53 +98,86 @@ static char *df_strcpy(char *dest, const char *src) {
     /* nothing */;
   return tmp;
 }
+
+int trace_dftracer_get_pid(struct pt_regs *ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id;
+    bpf_trace_printk(\"Tracing PID \%d\",pid);
+    pid_map.update(&pid, &pid);
+    return 0;
+}
+int trace_dftracer_remove_pid(struct pt_regs *ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id;
+    bpf_trace_printk(\"Stop tracing PID \%d\",pid);
+    pid_map.delete(&pid);
+    return 0;
+}
+
+
 """
 
 bpf_fn_template = """
 
-ARG_STRUCT
+enum EventPhase {
+    PHASE_BEGIN = 0,
+    PHASE_END = 1
+};
 
-struct event_CATEGORY_FUNCTION_event_t {                                        
-    enum EventType name;                                                      
+struct entry_CATEGORY_FUNCTION_event_t {                                        
+    enum EventType name;
+    enum EventPhase phase;                                                     
     u64 id;                                                                    
-    u64 ts;                                                                    
-    u64 dur;                                                                   
+    u64 ts;                                                                   
     u32 uid;                                                                   
-    char process[EVENT_NAME_MAX];                                              
-    ARGS_DECL;
-};                                                                           
-BPF_HASH(info_CATEGORY_FUNCTION_i, u64, struct event_CATEGORY_FUNCTION_event_t);
+    char process[TASK_COMM_LEN];                                              
+    ENTRY_ARGS_DECL;
+};
+struct exit_CATEGORY_FUNCTION_event_t {                                        
+    enum EventType name;
+    enum EventPhase phase;                                                    
+    u64 id;                                                                    
+    u64 ts;                                                             
+    EXIT_ARGS_DECL;
+};                                                                         
 
-int CATEGORY__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
-  struct event_CATEGORY_FUNCTION_event_t event = {};                              
-  event.id = bpf_get_current_pid_tgid();                                       
-  event.uid = bpf_get_current_uid_gid();                                       
+
+int syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
+  struct entry_CATEGORY_FUNCTION_event_t event = {};   
   int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
-  event.name = CATEGORY_FUNCTION_type;
   if (status == 0) {
+    event.name = CATEGORY_FUNCTION_type;         
+    event.phase = PHASE_BEGIN;                 
+    event.id = bpf_get_current_pid_tgid();
+    u32 pid = event.id;
+    u32* trace = pid_map.lookup(&pid);
+    if (trace == 0)                                      
+        return 0;
+    event.uid = bpf_get_current_uid_gid();                                        
     ARGS_INPUT_SET
     event.ts = bpf_ktime_get_ns();
-    info_CATEGORY_FUNCTION_i.update(&event.id, &event);
+    events.perf_submit(ctx, &event, sizeof(struct entry_CATEGORY_FUNCTION_event_t)); 
   }
   return 0;
 }
 
 int CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
   u64 tsp = bpf_ktime_get_ns();
-  u64 id = bpf_get_current_pid_tgid();                                         
-  struct event_CATEGORY_FUNCTION_event_t *event;                                   
-  event = info_CATEGORY_FUNCTION_i.lookup(&id);
-  if (event == 0)                                                               
-    return 0;                                                                  
-  event->dur = tsp - event->ts;   
-  ARGS_OUTPUT_SET
-  events.perf_submit(ctx, event, sizeof(struct event_CATEGORY_FUNCTION_event_t));
-  info_CATEGORY_FUNCTION_i.delete(&id);
+  struct exit_CATEGORY_FUNCTION_event_t exit_event = {};
+  exit_event.id = bpf_get_current_pid_tgid(); 
+  u32 pid = exit_event.id;
+  u32* trace = pid_map.lookup(&pid);
+  if (trace == 0)                                      
+    return 0;                              
+  
+  exit_event.name = CATEGORY_FUNCTION_type;
+  exit_event.phase = PHASE_END;
+  exit_event.ts = tsp;
+  ARGS_OUTPUT_SET  
+  events.perf_submit(ctx, &exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t));   
   return 0;
 }
 """
-bpf_output_set = "event->args.ret = PT_REGS_RC(ctx);"
-
 
 bpf_events_enum = """
 enum EventType {
@@ -152,28 +186,34 @@ enum EventType {
 """
 
 
-bpf_openat_args_struct = """
-struct CATEGORY_FUNCTION_args_t {
+bpf_openat_entry_args_struct = """
   int flags;
-  int ret;
   int dfd;
-  char fname[PATH_NAME_MAX];
-};
+  char fname[NAME_MAX];
 """
 
-bpf_openat_entry_args = ", int dfd, const char __user *fname, int flags"
+bpf_openat_exit_args_struct = """
+  int ret;
+"""
+
+bpf_openat_entry_args = ", int dfd, const char *filename, int flags"
 
 bpf_openat_args_input_set = """
-    event.args.flags = flags;
-    event.args.dfd = dfd;
-    bpf_probe_read_user_str(&event.args.fname, sizeof(event.args.fname), (void *)fname);
-    event.args.fname[PATH_NAME_MAX-1]=\'\\0\';
-    bpf_trace_printk(\"\%s\", event.args.fname);
+    event.flags = flags;
+    event.dfd = dfd;
+    int len = bpf_probe_read_user_str(&event.fname, sizeof(event.fname), filename);
+    bpf_trace_printk(\"%s %d\", event.fname, len);
 """
+
+bpf_openat_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);   
+"""
+
 b_temp = BPF(text = "")
 kprobe_functions = {
-     b_temp.get_syscall_prefix().decode(): [("openat", bpf_openat_args_struct, bpf_openat_args_input_set,bpf_openat_entry_args),
-                                            ("open", None, None, None)]
+     b_temp.get_syscall_prefix().decode(): [("openat", True, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set),
+                                            #("open", None, None, None, None)
+                                            ]
 }
 
 event_index = {}
@@ -182,46 +222,49 @@ event_type_enum = ""
 functions_bpf = ""
 fn_count = 1
 for cat, functions in kprobe_functions.items():
-    for fn, struct, args_set, entry_args in functions:
+    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign in functions:
         specific = bpf_fn_template
-        if struct:
-            specific = specific.replace("ARG_STRUCT", struct)
-            specific = specific.replace("ARGS_DECL", "struct CATEGORY_FUNCTION_args_t args;")
-            specific = specific.replace("ARGS_INPUT_SET", args_set)
-            specific = specific.replace("ARGS_OUTPUT_SET", bpf_output_set)
-            specific = specific.replace("ENTRY_ARGS", entry_args)
-        else:
-            specific = specific.replace("ARG_STRUCT", "")
-            specific = specific.replace("ARGS_DECL", "")
+        if has_args:
+            specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
+            specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
+            specific = specific.replace("ENTRY_ARGS", entry_fn_args)
+            specific = specific.replace("ARGS_INPUT_SET", entry_assign)
+            specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
+        else:            
+            specific = specific.replace("ENTRY_ARGS_DECL", "")
+            specific = specific.replace("EXIT_ARGS_DECL","")
+            specific = specific.replace("ENTRY_ARGS", "")
             specific = specific.replace("ARGS_INPUT_SET", "")
             specific = specific.replace("ARGS_OUTPUT_SET", "")
-            specific = specific.replace("ENTRY_ARGS", "")
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
         functions_bpf += specific
         event_type_enum += f"""
             {cat}_{fn}_type={fn_count},
         """
-        event_index[fn_count] = f"{cat}/{fn}"
+        event_index[fn_count] = [f"{cat}",f"{fn}"]
         fn_count+=1
 
 bpf_events_enum = bpf_events_enum.replace("EVENT_TYPES", event_type_enum)
 
 bpf_text = bpf_header + bpf_events_enum + bpf_utils + functions_bpf
-bpf_text = bpf_text.replace("EVENT_NAME_MAX",str(EVENT_NAME_MAX))
-bpf_text = bpf_text.replace("PATH_NAME_MAX",str(PATH_NAME_MAX))
+bpf_text = bpf_text.replace("TASK_COMM_LEN",str(TASK_COMM_LEN))
+bpf_text = bpf_text.replace("NAME_MAX",str(NAME_MAX))
 print(bpf_text)
 
 
+usdt_ctx = USDT(path=f"{dir}/build/libdftracer_ebpf.so")
 
+b = BPF(text = bpf_text, usdt_contexts=[usdt_ctx])
 
-b = BPF(text = bpf_text)
-
+b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_get_pid", fn_name="trace_dftracer_get_pid")
+b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_remove_pid", fn_name="trace_dftracer_remove_pid")
 for cat, functions in kprobe_functions.items():
-    for fn, _, _, _ in functions:
+    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign in functions:
         fnname = cat + fn
-        b.attach_kprobe(event=fnname, fn_name=f"{cat}__trace_entry_{fn}")
+        b.attach_kprobe(event=fnname, fn_name=f"syscall__trace_entry_{fn}")
         b.attach_kretprobe(event=fnname, fn_name=f"{cat}__trace_exit_{fn}")
+
 
 matched = b.num_open_kprobes()
 
@@ -230,17 +273,6 @@ if matched == 0:
     exit()
 
 initial_ts = 0
-
-# header
-if args.timestamp:
-    print("%-14s" % ("TIME(s)"), end="")
-if args.print_uid:
-    print("%-6s" % ("UID"), end="")
-print("%-6s %-16s %4s %3s " %
-      ("TID" if args.tid else "PID", "COMM", "FD", "ERR"), end="")
-if args.extended_fields:
-    print("%-9s" % ("FLAGS"), end="")
-print("PATH")
 
 class EventType(object):
     EVENT_ENTRY = 0
@@ -253,51 +285,113 @@ import ctypes
 class Eventype(ctypes.Structure):
     _fields_ = [
         ('name', ctypes.c_int),
-        
-    ]
-class OpenatArgs(ctypes.Structure):
-    _fields_ = [
-        ('flags', ctypes.c_int),
-        ('ret', ctypes.c_int),
-        ('dfd', ctypes.c_int),
-        ('fname', ctypes.c_char * PATH_NAME_MAX),
-    ]
-class OpenAtEvent(ctypes.Structure):
-    _fields_ = [
-        ('name', ctypes.c_int),
+        ('phase', ctypes.c_int),
         ('id', ctypes.c_uint64),
         ('ts', ctypes.c_uint64),
-        ('dur', ctypes.c_uint64),
+    ]
+
+class OpenAtEventBegin(ctypes.Structure):
+    _fields_ = [
+        ('name', ctypes.c_int),
+        ('phase', ctypes.c_int),
+        ('id', ctypes.c_uint64),
+        ('ts', ctypes.c_uint64),
         ('uid', ctypes.c_uint32),
-        ('process', ctypes.c_char * EVENT_NAME_MAX),
-        ('args', OpenatArgs)        
+        ('process', ctypes.c_char * TASK_COMM_LEN), 
+        ('flags', ctypes.c_int),
+        ('dfd', ctypes.c_int),
+        ('fname', ctypes.c_char * NAME_MAX), 
+    ]
+class OpenAtEventEnd(ctypes.Structure):
+    _fields_ = [
+        ('name', ctypes.c_int),
+        ('phase', ctypes.c_int),
+        ('id', ctypes.c_uint64),
+        ('ts', ctypes.c_uint64),
+        ('ret', ctypes.c_int),
     ]
 
 class GenericEvent(ctypes.Structure):
     _fields_ = [
         ('name', ctypes.c_int),
+        ('phase', ctypes.c_int),
         ('id', ctypes.c_uint64),
         ('ts', ctypes.c_uint64),
-        ('dur', ctypes.c_uint64),
         ('uid', ctypes.c_uint32),
-        ('process', ctypes.c_char * EVENT_NAME_MAX) 
+        ('process', ctypes.c_char * TASK_COMM_LEN) 
     ]
 
+index = 1
 
+def handle_event(name, begin, end, level, group_idx):
+    global index
+    obj = {"id":index}
+    has_begin = begin is not None
+    has_end = end is not None
+    phase = "X"
+    obj["ts"] = 0
+    id = 0
+    begin_event = None
+    end_event = None
+    if has_begin:
+        begin_event = ctypes.cast(begin, ctypes.POINTER(OpenAtEventBegin)).contents
+    if has_end:
+        end_event = ctypes.cast(end, ctypes.POINTER(OpenAtEventEnd)).contents
+    if not (has_begin and has_end):
+        phase = "i"
+        if has_begin:
+            obj["ts"] = begin_event.ts
+            obj["pid"] = begin_event.id >> 32
+            obj["tid"] = begin_event.id & 0xffffff
+            obj["name"] = event_index[begin_event.name][1]
+            obj["cat"] = event_index[begin_event.name][0]
+        else:
+            obj["ts"] = end_event.ts
+            obj["pid"] = end_event.id >> 32
+            obj["tid"] = end_event.id & 0xffffff
+            obj["name"] = event_index[end_event.name][1]
+            obj["cat"] = event_index[end_event.name][0]
+    else:
+        obj["ts"] = begin_event.ts
+        obj["pid"] = begin_event.id >> 32
+        obj["tid"] = begin_event.id & 0xffffff
+        obj["name"] = event_index[begin_event.name][1]
+        obj["cat"] = event_index[begin_event.name][0]
+    obj["ph"] = phase
+    obj["args"] = {"level":level,"group_idx":group_idx}
+    if (name == 1):
+        if has_begin:
+            
+            obj["args"]["fname"] = begin_event.fname.decode()
+            obj["args"]["dfd"] = begin_event.dfd
+            obj["args"]["flags"] = begin_event.flags
+        if has_end:
+            
+            obj["args"]["ret"] = end_event.ret
+    index += 1
+    return obj
+
+stack = {}
+group_idx = 0
 extract_bits = lambda num, k, p: int(bin(num)[2:][p:p+k], 2)
 # process event
 def print_event(cpu, data, size):
+    global index, stack, group_idx
     event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
-    if (event_type.name == 1):
-        event = ctypes.cast(data, ctypes.POINTER(OpenAtEvent)).contents
-        tid = event.id & 0xffffffff 
-        pid = event.id >> 32
-        print(pid, " ", tid, " ",event_index[event.name], " ", event.process, " ", event.args.fname, " ", event.args.ret, " ", event.args.dfd, " ", event.args.flags)
+    if event_type.phase == 0: # BEGIN
+        if event_type.id not in stack or len(stack[event_type.id]) == 0:
+            group_idx+=1
+        if event_type.id not in stack:
+            stack[event_type.id] = []
+        stack[event_type.id].append(data)
     else:
-        event = ctypes.cast(data, ctypes.POINTER(GenericEvent)).contents
-        tid = event.id & 0xffffffff 
-        pid = event.id >> 32
-        print(pid, " ", tid, " ",event_index[event.name], " ", event.process)
+        level = 0
+        if event_type.id not in stack or len(stack[event_type.id]) == 0:
+            print(handle_event(event_type.name, None, data,level,group_idx))
+        else:
+            level = len(stack[event_type.id])
+            begin = stack[event_type.id].pop(-1)
+            print(handle_event(event_type.name, begin, data,level,group_idx))
     return 
     global initial_ts
 
