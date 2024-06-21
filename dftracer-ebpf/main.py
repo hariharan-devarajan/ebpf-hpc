@@ -86,8 +86,16 @@ bpf_header="""
 #include <uapi/linux/limits.h>
 #include <uapi/linux/ptrace.h>
 
+enum EventPhase {
+    PHASE_BEGIN = 0,
+    PHASE_END = 1
+};
+
 BPF_PERF_OUTPUT(events);
 BPF_HASH(pid_map, u32, u32);
+BPF_HASH(temp_file_map, u64, const char*);
+BPF_HASH(file_map, u32, const char*);
+
 """
 
 bpf_utils = """
@@ -118,12 +126,6 @@ int trace_dftracer_remove_pid(struct pt_regs *ctx) {
 """
 
 bpf_fn_template = """
-
-enum EventPhase {
-    PHASE_BEGIN = 0,
-    PHASE_END = 1
-};
-
 struct entry_CATEGORY_FUNCTION_event_t {                                        
     enum EventType name;
     enum EventPhase phase;                                                     
@@ -142,7 +144,7 @@ struct exit_CATEGORY_FUNCTION_event_t {
 };                                                                         
 
 
-int syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
+RETURN syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
   struct entry_CATEGORY_FUNCTION_event_t event = {};   
   int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
   if (status == 0) {
@@ -161,7 +163,7 @@ int syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
   return 0;
 }
 
-int CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
+RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
   u64 tsp = bpf_ktime_get_ns();
   struct exit_CATEGORY_FUNCTION_event_t exit_event = {};
   exit_event.id = bpf_get_current_pid_tgid(); 
@@ -185,6 +187,7 @@ enum EventType {
 };
 """
 
+# Openat structures
 
 bpf_openat_entry_args_struct = """
   int flags;
@@ -196,22 +199,115 @@ bpf_openat_exit_args_struct = """
   int ret;
 """
 
+bpf_openat_fn_return = "int"
+
 bpf_openat_entry_args = ", int dfd, const char *filename, int flags"
 
 bpf_openat_args_input_set = """
     event.flags = flags;
     event.dfd = dfd;
     int len = bpf_probe_read_user_str(&event.fname, sizeof(event.fname), filename);
-    bpf_trace_printk(\"%s %d\", event.fname, len);
+    temp_file_map.update(&event.id, &event.fname);
 """
 
 bpf_openat_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);   
+    exit_event.ret = PT_REGS_RC(ctx);
+    const char **filename = temp_file_map.lookup(&exit_event.id);
+    if (filename != 0) {
+        file_map.update(&exit_event.ret, filename);
+        temp_file_map.delete(&exit_event.id);
+    }
 """
+
+# read structures
+
+bpf_read_entry_args_struct = """
+  char fname[NAME_MAX];
+  u32 count;
+"""
+
+bpf_read_exit_args_struct = """
+  int ret;
+"""
+
+bpf_read_fn_return = "int"
+
+bpf_read_entry_args = ", int fd, void *data, u32 count"
+
+bpf_read_args_input_set = """
+    event.count = count;
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+    }
+"""
+
+bpf_read_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+"""
+
+# write structures
+
+bpf_write_entry_args_struct = """
+  char fname[NAME_MAX];
+  u32 count;
+"""
+
+bpf_write_exit_args_struct = """
+  int ret;
+"""
+
+bpf_write_fn_return = "int"
+
+bpf_write_entry_args = ", int fd, const void *data, u32 count"
+
+bpf_write_args_input_set = """
+    event.count = count;
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+    }
+"""
+
+bpf_write_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+"""
+
+
+# close structures
+
+bpf_close_entry_args_struct = """
+  char fname[NAME_MAX];
+"""
+
+bpf_close_exit_args_struct = """
+  int ret;
+"""
+
+bpf_close_fn_return = "int"
+
+bpf_close_entry_args = ", int fd"
+
+bpf_close_args_input_set = """
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+        file_map.delete(&fd);
+    }
+"""
+
+bpf_close_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+
+"""
+
 
 b_temp = BPF(text = "")
 kprobe_functions = {
-     b_temp.get_syscall_prefix().decode(): [("openat", True, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set),
+     b_temp.get_syscall_prefix().decode(): [("openat", True, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
+                                            ("read", True, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
+                                            ("write", True, bpf_write_entry_args_struct, bpf_write_exit_args_struct, bpf_write_entry_args,bpf_write_args_input_set, bpf_write_output_set, bpf_write_fn_return),
+                                            ("close", True, bpf_close_entry_args_struct, bpf_close_exit_args_struct, bpf_close_entry_args,bpf_close_args_input_set, bpf_close_output_set, bpf_close_fn_return),
                                             #("open", None, None, None, None)
                                             ]
 }
@@ -222,7 +318,7 @@ event_type_enum = ""
 functions_bpf = ""
 fn_count = 1
 for cat, functions in kprobe_functions.items():
-    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign in functions:
+    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
         specific = bpf_fn_template
         if has_args:
             specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
@@ -230,12 +326,14 @@ for cat, functions in kprobe_functions.items():
             specific = specific.replace("ENTRY_ARGS", entry_fn_args)
             specific = specific.replace("ARGS_INPUT_SET", entry_assign)
             specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
+            specific = specific.replace("RETURN", ret)
         else:            
             specific = specific.replace("ENTRY_ARGS_DECL", "")
             specific = specific.replace("EXIT_ARGS_DECL","")
             specific = specific.replace("ENTRY_ARGS", "")
             specific = specific.replace("ARGS_INPUT_SET", "")
             specific = specific.replace("ARGS_OUTPUT_SET", "")
+            specific = specific.replace("RETURN", "int")
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
         functions_bpf += specific
@@ -260,7 +358,7 @@ b = BPF(text = bpf_text, usdt_contexts=[usdt_ctx])
 b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_get_pid", fn_name="trace_dftracer_get_pid")
 b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_remove_pid", fn_name="trace_dftracer_remove_pid")
 for cat, functions in kprobe_functions.items():
-    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign in functions:
+    for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
         fnname = cat + fn
         b.attach_kprobe(event=fnname, fn_name=f"syscall__trace_entry_{fn}")
         b.attach_kretprobe(event=fnname, fn_name=f"{cat}__trace_exit_{fn}")
@@ -446,12 +544,8 @@ def print_event(cpu, data, size):
 # loop with callback to print_event
 b["events"].open_perf_buffer(print_event, page_cnt=args.buffer_pages)
 start_time = datetime.now()
-exit_count = 1
 while not args.duration or datetime.now() - start_time < args.duration:
     try:
         b.perf_buffer_poll()
     except KeyboardInterrupt:
         exit()
-    if exit_count > 10:
-        exit()
-    exit_count+=1

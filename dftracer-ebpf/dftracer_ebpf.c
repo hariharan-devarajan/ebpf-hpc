@@ -8,11 +8,11 @@ __attribute__((visibility("default"))) int dftracer_remove_pid() {
 }
 
 void dftracer_ebpf_init(void) {
-  printf("Constructor Loaded");
+  // printf("Constructor Loaded\n");
   dftracer_get_pid();
 }
 
 void dftracer_ebpf_fini(void) {
-  printf("Desctructor Loaded");
+  // printf("Desctructor Loaded\n");
   dftracer_remove_pid();
 }
