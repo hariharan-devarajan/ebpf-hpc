@@ -6,6 +6,7 @@ import argparse
 import signal
 import os
 from collections import defaultdict
+import time
 from datetime import datetime, timedelta
 
 # arguments
@@ -87,12 +88,13 @@ bpf_header="""
 #include <uapi/linux/ptrace.h>
 
 enum EventPhase {
-    PHASE_BEGIN = 0,
-    PHASE_END = 1
+    PHASE_BEGIN = 1,
+    PHASE_END = 2
 };
 
-BPF_PERF_OUTPUT(events);
-BPF_HASH(pid_map, u32, u32);
+//BPF_PERF_OUTPUT(events);
+BPF_RINGBUF_OUTPUT(events, 1 << 16);
+BPF_HASH(pid_map, u32, u64);
 BPF_HASH(temp_file_map, u64, const char*);
 BPF_HASH(file_map, u32, const char*);
 
@@ -110,8 +112,9 @@ static char *df_strcpy(char *dest, const char *src) {
 int trace_dftracer_get_pid(struct pt_regs *ctx) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id;
+    u64 tsp = bpf_ktime_get_ns();
     bpf_trace_printk(\"Tracing PID \%d\",pid);
-    pid_map.update(&pid, &pid);
+    pid_map.update(&pid, &tsp);
     return 0;
 }
 int trace_dftracer_remove_pid(struct pt_regs *ctx) {
@@ -145,38 +148,42 @@ struct exit_CATEGORY_FUNCTION_event_t {
 
 
 RETURN syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
-  struct entry_CATEGORY_FUNCTION_event_t event = {};   
+  
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = id;
+  u64* start_ts = pid_map.lookup(&pid);
+  if (start_ts == 0)                                      
+    return 0;
+  struct entry_CATEGORY_FUNCTION_event_t event = {};
+  event.id = id;
   int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
   if (status == 0) {
     event.name = CATEGORY_FUNCTION_type;         
-    event.phase = PHASE_BEGIN;                 
-    event.id = bpf_get_current_pid_tgid();
-    u32 pid = event.id;
-    u32* trace = pid_map.lookup(&pid);
-    if (trace == 0)                                      
-        return 0;
+    event.phase = PHASE_BEGIN;
     event.uid = bpf_get_current_uid_gid();                                        
     ARGS_INPUT_SET
-    event.ts = bpf_ktime_get_ns();
-    events.perf_submit(ctx, &event, sizeof(struct entry_CATEGORY_FUNCTION_event_t)); 
+    event.ts = bpf_ktime_get_ns() - *start_ts;
+    events.ringbuf_output(&event, sizeof(struct entry_CATEGORY_FUNCTION_event_t), 0);
+    //events.perf_submit(ctx, &event, sizeof(struct entry_CATEGORY_FUNCTION_event_t)); 
   }
   return 0;
 }
 
 RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
   u64 tsp = bpf_ktime_get_ns();
-  struct exit_CATEGORY_FUNCTION_event_t exit_event = {};
-  exit_event.id = bpf_get_current_pid_tgid(); 
-  u32 pid = exit_event.id;
-  u32* trace = pid_map.lookup(&pid);
-  if (trace == 0)                                      
-    return 0;                              
-  
+  u64 id = bpf_get_current_pid_tgid(); 
+  u32 pid = id;
+  u64* start_ts = pid_map.lookup(&pid);
+  if (start_ts == 0)                                      
+    return 0;       
+  struct exit_CATEGORY_FUNCTION_event_t exit_event = {};                       
+  exit_event.id = id;
   exit_event.name = CATEGORY_FUNCTION_type;
   exit_event.phase = PHASE_END;
-  exit_event.ts = tsp;
+  exit_event.ts = tsp - *start_ts;
   ARGS_OUTPUT_SET  
-  events.perf_submit(ctx, &exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t));   
+  events.ringbuf_output(&exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
+  //events.perf_submit(ctx, &exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t));   
   return 0;
 }
 """
@@ -303,11 +310,12 @@ bpf_close_output_set = """
 
 
 b_temp = BPF(text = "")
+keep_args = True
 kprobe_functions = {
-     b_temp.get_syscall_prefix().decode(): [("openat", True, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
-                                            ("read", True, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
-                                            ("write", True, bpf_write_entry_args_struct, bpf_write_exit_args_struct, bpf_write_entry_args,bpf_write_args_input_set, bpf_write_output_set, bpf_write_fn_return),
-                                            ("close", True, bpf_close_entry_args_struct, bpf_close_exit_args_struct, bpf_close_entry_args,bpf_close_args_input_set, bpf_close_output_set, bpf_close_fn_return),
+     b_temp.get_syscall_prefix().decode(): [("openat", keep_args, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
+                                            ("read", keep_args, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
+                                            ("write", keep_args, bpf_write_entry_args_struct, bpf_write_exit_args_struct, bpf_write_entry_args,bpf_write_args_input_set, bpf_write_output_set, bpf_write_fn_return),
+                                            ("close", keep_args, bpf_close_entry_args_struct, bpf_close_exit_args_struct, bpf_close_entry_args,bpf_close_args_input_set, bpf_close_output_set, bpf_close_fn_return),
                                             #("open", None, None, None, None)
                                             ]
 }
@@ -441,30 +449,32 @@ def handle_event(name, begin, end, level, group_idx):
             obj["ts"] = begin_event.ts
             obj["pid"] = begin_event.id >> 32
             obj["tid"] = begin_event.id & 0xffffff
-            obj["name"] = event_index[begin_event.name][1]
-            obj["cat"] = event_index[begin_event.name][0]
+            if begin_event.name != 0 and begin_event.name in event_index:
+                obj["name"] = event_index[begin_event.name][1]
+                obj["cat"] = event_index[begin_event.name][0]
         else:
             obj["ts"] = end_event.ts
             obj["pid"] = end_event.id >> 32
             obj["tid"] = end_event.id & 0xffffff
-            obj["name"] = event_index[end_event.name][1]
-            obj["cat"] = event_index[end_event.name][0]
+            if end_event.name != 0 and end_event.name in event_index:
+                obj["name"] = event_index[end_event.name][1]
+                obj["cat"] = event_index[end_event.name][0]
     else:
         obj["ts"] = begin_event.ts
-        obj["pid"] = begin_event.id >> 32
-        obj["tid"] = begin_event.id & 0xffffff
-        obj["name"] = event_index[begin_event.name][1]
-        obj["cat"] = event_index[begin_event.name][0]
+        obj["dur"] = end_event.ts - begin_event.ts
+        obj["pid"] = end_event.id >> 32
+        obj["tid"] = end_event.id & 0xffffff
+        if end_event.name in event_index:
+            obj["name"] = event_index[end_event.name][1]
+            obj["cat"] = event_index[end_event.name][0]
     obj["ph"] = phase
     obj["args"] = {"level":level,"group_idx":group_idx}
     if (name == 1):
-        if has_begin:
-            
+        if has_begin:            
             obj["args"]["fname"] = begin_event.fname.decode()
             obj["args"]["dfd"] = begin_event.dfd
             obj["args"]["flags"] = begin_event.flags
-        if has_end:
-            
+        if has_end:            
             obj["args"]["ret"] = end_event.ret
     index += 1
     return obj
@@ -472,25 +482,39 @@ def handle_event(name, begin, end, level, group_idx):
 stack = {}
 group_idx = 0
 extract_bits = lambda num, k, p: int(bin(num)[2:][p:p+k], 2)
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("trace.pfw", mode="a", encoding='utf-8'),
+    ],
+    format='%(message)s'
+)
+logging.info("[")
 # process event
 def print_event(cpu, data, size):
-    global index, stack, group_idx
-    event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
-    if event_type.phase == 0: # BEGIN
-        if event_type.id not in stack or len(stack[event_type.id]) == 0:
-            group_idx+=1
-        if event_type.id not in stack:
-            stack[event_type.id] = []
-        stack[event_type.id].append(data)
-    else:
-        level = 0
-        if event_type.id not in stack or len(stack[event_type.id]) == 0:
-            print(handle_event(event_type.name, None, data,level,group_idx))
-        else:
-            level = len(stack[event_type.id])
-            begin = stack[event_type.id].pop(-1)
-            print(handle_event(event_type.name, begin, data,level,group_idx))
-    return 
+    try:
+        global index, stack, group_idx
+        event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
+        if event_type.phase == 1: # BEGIN
+            if event_type.id not in stack or len(stack[event_type.id]) == 0:
+                group_idx+=1
+            if event_type.id not in stack:
+                stack[event_type.id] = []
+            stack[event_type.id].append(data)
+        elif event_type.phase == 2: # END
+            level = 0
+            if event_type.id not in stack or len(stack[event_type.id]) == 0:
+                val = handle_event(event_type.name, None, data,level,group_idx)
+            else:
+                level = len(stack[event_type.id])
+                begin = stack[event_type.id].pop()
+                if event_type.name > 0:
+                    val = handle_event(event_type.name, begin, data,level,group_idx)
+                    logging.info(val)
+        return 
+    except Exception as er:
+       return
     global initial_ts
 
     skip = False
@@ -542,10 +566,12 @@ def print_event(cpu, data, size):
             pass
 
 # loop with callback to print_event
-b["events"].open_perf_buffer(print_event, page_cnt=args.buffer_pages)
+b["events"].open_ring_buffer(print_event)
 start_time = datetime.now()
-while not args.duration or datetime.now() - start_time < args.duration:
+while True:
     try:
-        b.perf_buffer_poll()
+        #b.ring_buffer_poll()
+        b.ring_buffer_consume()
+        time.sleep(0.1)
     except KeyboardInterrupt:
         exit()
