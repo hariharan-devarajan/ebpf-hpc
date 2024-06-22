@@ -9,14 +9,16 @@ for procs in 4; do
     for trace in 1; do
         if [[ "$trace" == "0" ]]; then
             PRELOAD=""
+            PRELOAD_ENV=""
         else    
-            PRELOAD="-env LD_PRELOAD $PWD/libdftracer_ebpf.so"
+            PRELOAD="$PWD/libdftracer_ebpf.so"
+            PRELOAD_ENV="-x LD_PRELOAD=$PWD/libdftracer_ebpf.so"
         fi
         for i in {1..25}; do
             echo -n "$i,"
             rm -rf file*.dat
-            mpirun -n $procs ${PRELOAD} ./test 128 128 $ts $PWD $trace
-             exit 0
+            LD_PRELOAD=${PRELOAD} mpirun -np $procs ./test 128 128 $ts $PWD $trace
+            exit 0
         done
     done
    

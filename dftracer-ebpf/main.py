@@ -369,6 +369,8 @@ if BPF.get_kprobe_functions(b'ext4_file_read_iter'):
 else:
     ext4_read_fn = 'generic_file_read_iter'
 
+so_dict = {"mpi":"/usr/lib/aarch64-linux-gnu/openmpi/lib/libmpi.so"}
+
 kprobe_functions = {
      b_temp.get_syscall_prefix().decode(): [("openat", keep_args, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
                                             ("read", keep_args, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
@@ -412,8 +414,8 @@ kprobe_functions = {
                                             ("syncfs", False, None, None, None, None, None, None),
                                             ("writev", False, None, None, None, None, None, None),
 
-                                            ("kmem_cache_alloc", False, None, None, None, None, None, None),
-                                            ("shmem_alloc_inode", False, None, None, None, None, None, None),
+#                                            ("kmem_cache_alloc", False, None, None, None, None, None, None),
+#                                            ("shmem_alloc_inode", False, None, None, None, None, None, None),
                                             #("open", None, None, None, None)
                                             ],
     "os_cache":[("add_to_page_cache_lru", False, None, None, None, None, None, None),
@@ -470,6 +472,91 @@ kprobe_functions = {
         ("aligned_alloc", False, None, None, None, None, None, None),
         ("free", False, None, None, None, None, None, None),
     ],
+    "mpi":[
+        ("MPI_File_set_size", False, None, None, None, None, None, None),
+        ("MPI_File_iread_at", False, None, None, None, None, None, None),
+        ("MPI_File_iread", False, None, None, None, None, None, None),
+        ("MPI_File_iread_shared", False, None, None, None, None, None, None),
+        ("MPI_File_iwrite_at", False, None, None, None, None, None, None),
+        ("MPI_File_iwrite", False, None, None, None, None, None, None),
+        ("MPI_File_iwrite_shared", False, None, None, None, None, None, None),
+        ("MPI_File_open", False, None, None, None, None, None, None),
+        ("MPI_File_read_all_begin", False, None, None, None, None, None, None),
+        ("MPI_File_read_all", False, None, None, None, None, None, None),
+        ("MPI_File_read_at_all", False, None, None, None, None, None, None),
+        ("MPI_File_read_at_all_begin", False, None, None, None, None, None, None),
+        ("MPI_File_read_at", False, None, None, None, None, None, None),
+        ("MPI_File_read", False, None, None, None, None, None, None),
+        ("MPI_File_read_ordered_begin", False, None, None, None, None, None, None),
+        ("MPI_File_read_ordered", False, None, None, None, None, None, None),
+        ("MPI_File_read_shared", False, None, None, None, None, None, None),
+        ("MPI_File_set_view", False, None, None, None, None, None, None),
+        ("MPI_File_sync", False, None, None, None, None, None, None),
+        ("MPI_File_write_all_begin", False, None, None, None, None, None, None),
+        ("MPI_File_write_all", False, None, None, None, None, None, None),
+        ("MPI_File_write_at_all_begin", False, None, None, None, None, None, None),
+        ("MPI_File_write_at_all", False, None, None, None, None, None, None),
+        ("MPI_File_write_at", False, None, None, None, None, None, None),
+        ("MPI_File_write", False, None, None, None, None, None, None),
+        ("MPI_File_write_ordered_begin", False, None, None, None, None, None, None),
+        ("MPI_File_write_ordered", False, None, None, None, None, None, None),
+        ("MPI_File_write_shared", False, None, None, None, None, None, None),
+        ("MPI_Finalized", False, None, None, None, None, None, None),
+        
+        ("MPI_Init", False, None, None, None, None, None, None),
+        ("MPI_Finalize", False, None, None, None, None, None, None),
+        ("MPI_Comm_rank", False, None, None, None, None, None, None),
+        ("MPI_Comm_size", False, None, None, None, None, None, None),
+        ("MPI_Init_thread", False, None, None, None, None, None, None),
+        ("MPI_Get_processor_name", False, None, None, None, None, None, None),
+        ("MPI_Comm_set_errhandler", False, None, None, None, None, None, None),
+        ("MPI_Barrier", False, None, None, None, None, None, None),
+        ("MPI_Bcast", False, None, None, None, None, None, None),
+        ("MPI_Gather", False, None, None, None, None, None, None),
+        ("MPI_Gatherv", False, None, None, None, None, None, None),
+        ("MPI_Scatterv", False, None, None, None, None, None, None),
+        ("MPI_Allgather", False, None, None, None, None, None, None),
+        ("MPI_Allgatherv", False, None, None, None, None, None, None),
+        ("MPI_Alltoall", False, None, None, None, None, None, None),
+        ("MPI_Reduce", False, None, None, None, None, None, None),
+        ("MPI_Allreduce", False, None, None, None, None, None, None),
+        ("MPI_Reduce_scatter", False, None, None, None, None, None, None),
+        ("MPI_Scan", False, None, None, None, None, None, None),
+        ("MPI_Type_commit", False, None, None, None, None, None, None),
+        ("MPI_Type_create_darray", False, None, None, None, None, None, None),
+        ("MPI_File_get_size", False, None, None, None, None, None, None),
+        ("MPI_Cart_rank", False, None, None, None, None, None, None),
+        ("MPI_Cart_create", False, None, None, None, None, None, None),
+        ("MPI_Cart_get", False, None, None, None, None, None, None),
+        ("MPI_Cart_shift", False, None, None, None, None, None, None),
+        ("MPI_Wait", False, None, None, None, None, None, None),
+        ("MPI_Send", False, None, None, None, None, None, None),
+        ("MPI_Recv", False, None, None, None, None, None, None),
+        ("MPI_Sendrecv", False, None, None, None, None, None, None),
+        ("MPI_Isend", False, None, None, None, None, None, None),
+        ("MPI_Irecv", False, None, None, None, None, None, None),
+        ("MPI_Waitall", False, None, None, None, None, None, None),
+        ("MPI_Waitsome", False, None, None, None, None, None, None),
+        ("MPI_Waitany", False, None, None, None, None, None, None),
+        ("MPI_Ssend", False, None, None, None, None, None, None),
+        ("MPI_Comm_split", False, None, None, None, None, None, None),
+        ("MPI_Comm_dup", False, None, None, None, None, None, None),
+        ("MPI_Comm_create", False, None, None, None, None, None, None),
+        ("MPI_File_seek", False, None, None, None, None, None, None),
+        ("MPI_File_seek_shared", False, None, None, None, None, None, None),
+        ("MPI_Ibcast", False, None, None, None, None, None, None),
+        ("MPI_Test", False, None, None, None, None, None, None),
+        ("MPI_Testall", False, None, None, None, None, None, None),
+        ("MPI_Testsome", False, None, None, None, None, None, None),
+        ("MPI_Testany", False, None, None, None, None, None, None),
+        ("MPI_Ireduce", False, None, None, None, None, None, None),
+        ("MPI_Igather", False, None, None, None, None, None, None),
+        ("MPI_Iscatter", False, None, None, None, None, None, None),
+        ("MPI_Ialltoall", False, None, None, None, None, None, None),
+        ("MPI_Comm_free", False, None, None, None, None, None, None),
+        ("MPI_Cart_sub", False, None, None, None, None, None, None),
+        ("MPI_Comm_split_type", False, None, None, None, None, None, None),
+    ],
 }
 
 event_index = {}
@@ -496,7 +583,7 @@ for cat, functions in kprobe_functions.items():
                 specific = specific.replace("ARGS_INPUT_SET", "")
                 specific = specific.replace("ARGS_OUTPUT_SET", "")
                 specific = specific.replace("RETURN", "int")
-        elif cat in ["os_cache","ext4", "c"]:
+        elif cat in ["os_cache","ext4", "c", "mpi"]:
             specific = bpf_fn_os_cache_template
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
@@ -532,11 +619,14 @@ for cat, functions in kprobe_functions.items():
                 fnname = fn
                 b.attach_kprobe(event=fnname, fn_name=f"entry_trace_{fn}")
                 b.attach_kretprobe(event=fnname, fn_name=f"exit_trace_{fn}")
-            elif cat in ["c"]:
-                b.attach_uprobe(name=cat, sym=fn, fn_name=f"entry_trace_{fn}")
-                b.attach_uretprobe(name=cat, sym=fn, fn_name=f"exit_trace_{fn}")
-        except Exception:
-            print(f"Unable to create probe for {cat} and {fn}")
+            elif cat in ["c", "mpi"]:
+                library = cat
+                if cat in so_dict:
+                    library = so_dict[cat]
+                b.attach_uprobe(name=library, sym=fn, fn_name=f"entry_trace_{fn}")
+                b.attach_uretprobe(name=library, sym=fn, fn_name=f"exit_trace_{fn}")
+        except Exception as err:
+            print(f"Unable to create probe for {cat} and {fn} {err}")
             pass
 
 
@@ -679,8 +769,11 @@ logging.basicConfig(
 )
 logging.info("[")
 import json
+last_updated = datetime.now()
 # process event
 def print_event(cpu, data, size):
+    global last_updated
+    last_updated = datetime.now()
     try:
         global index, stack, group_idx
         event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
@@ -760,11 +853,15 @@ def print_event(cpu, data, size):
 
 # loop with callback to print_event
 b["events"].open_ring_buffer(print_event)
-start_time = datetime.now()
+interval = timedelta(seconds=int(120))
 while True:
     try:
+        is_processing = False
         #b.ring_buffer_poll()
         b.ring_buffer_consume()
-        time.sleep(0.1)
+        time.sleep(0.5)
+        if datetime.now() - last_updated > interval:
+            print("Idling for 120 secs. Exiting.")
+            exit()
     except KeyboardInterrupt:
         exit()
