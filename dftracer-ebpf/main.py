@@ -369,7 +369,10 @@ if BPF.get_kprobe_functions(b'ext4_file_read_iter'):
 else:
     ext4_read_fn = 'generic_file_read_iter'
 
-so_dict = {"mpi":"/usr/lib/aarch64-linux-gnu/openmpi/lib/libmpi.so"}
+so_dict = {"mpi":"/usr/lib/aarch64-linux-gnu/openmpi/lib/libmpi.so",
+           "user":"/Users/hariharandev1/Library/CloudStorage/OneDrive-LLNL/projects/ebpf-hpc/dftracer-ebpf/build/test"}
+exec = so_dict["user"]
+symbols = os.popen(f"nm {exec} | grep \" T \" | awk {{'print $3'}}").read().strip().split("\n")
 
 kprobe_functions = {
      b_temp.get_syscall_prefix().decode(): [("openat", keep_args, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
@@ -557,6 +560,7 @@ kprobe_functions = {
         ("MPI_Cart_sub", False, None, None, None, None, None, None),
         ("MPI_Comm_split_type", False, None, None, None, None, None, None),
     ],
+    "user": [(sym, False, None, None, None, None, None, None) for sym in symbols]
 }
 
 event_index = {}
@@ -583,7 +587,7 @@ for cat, functions in kprobe_functions.items():
                 specific = specific.replace("ARGS_INPUT_SET", "")
                 specific = specific.replace("ARGS_OUTPUT_SET", "")
                 specific = specific.replace("RETURN", "int")
-        elif cat in ["os_cache","ext4", "c", "mpi"]:
+        elif cat in ["os_cache","ext4", "c", "mpi", "user"]:
             specific = bpf_fn_os_cache_template
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
@@ -625,6 +629,15 @@ for cat, functions in kprobe_functions.items():
                     library = so_dict[cat]
                 b.attach_uprobe(name=library, sym=fn, fn_name=f"entry_trace_{fn}")
                 b.attach_uretprobe(name=library, sym=fn, fn_name=f"exit_trace_{fn}")
+            elif cat in ["user"]:
+                exec = cat
+                if cat in so_dict:
+                    exec = so_dict[cat]
+                
+                symbols = os.popen(f"nm {exec} | grep \" T \" | awk {{'print $3'}}").read().strip().split("\n")
+                for sym in symbols:
+                    b.attach_uprobe(name=exec, sym=sym, fn_name=f"entry_trace_{fn}")
+                    b.attach_uretprobe(name=exec, sym=sym, fn_name=f"exit_trace_{fn}")
         except Exception as err:
             print(f"Unable to create probe for {cat} and {fn} {err}")
             pass
