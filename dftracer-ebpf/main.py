@@ -110,10 +110,20 @@ static char *df_strcpy(char *dest, const char *src) {
   return tmp;
 }
 
+static u64 get_current_time(u64* start) {
+    u64 current_time = bpf_ktime_get_ns() / 1000;
+    if (current_time <= *start) return 0;
+    else return current_time - *start;
+}
+static u64 get_current_time2(u64 *current_time, u64 *start) {
+    if (*current_time <= *start) return 0;
+    else return *current_time - *start;
+}
+
 int trace_dftracer_get_pid(struct pt_regs *ctx) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id;
-    u64 tsp = bpf_ktime_get_ns();
+    u64 tsp = bpf_ktime_get_ns() / 1000;
     bpf_trace_printk(\"Tracing PID \%d\",pid);
     pid_map.update(&pid, &tsp);
     return 0;
@@ -161,7 +171,7 @@ RETURN syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
     event.phase = PHASE_BEGIN;
     event.uid = bpf_get_current_uid_gid();                                        
     ARGS_INPUT_SET
-    event.ts = bpf_ktime_get_ns() - *start_ts;
+    event.ts = get_current_time(start_ts);
     events.ringbuf_output(&event, sizeof(struct entry_CATEGORY_FUNCTION_event_t), 0);
     //events.perf_submit(ctx, &event, sizeof(struct entry_CATEGORY_FUNCTION_event_t)); 
   }
@@ -169,7 +179,7 @@ RETURN syscall__trace_entry_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
 }
 
 RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
-  u64 tsp = bpf_ktime_get_ns();
+  u64 tsp = bpf_ktime_get_ns() / 1000;
   u64 id = bpf_get_current_pid_tgid(); 
   u32 pid = id;
   u64* start_ts = pid_map.lookup(&pid);
@@ -179,7 +189,7 @@ RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
   exit_event.id = id;
   exit_event.name = CATEGORY_FUNCTION_type;
   exit_event.phase = PHASE_END;
-  exit_event.ts = tsp - *start_ts;
+  exit_event.ts = get_current_time2(&tsp, start_ts);
   ARGS_OUTPUT_SET  
   events.ringbuf_output(&exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
   //events.perf_submit(ctx, &exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t));   
@@ -189,14 +199,20 @@ RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
 
 
 bpf_fn_os_cache_template = """
-struct CATEGORY_FUNCTION_event_t {                                        
+struct entry_CATEGORY_FUNCTION_event_t {                                        
     enum EventType name;
     enum EventPhase phase;                                                     
     u64 id;                                                                    
     u64 ts;                                                                   
     u32 uid;                                                                   
     char process[TASK_COMM_LEN];
-};                                                                  
+};        
+struct exit_CATEGORY_FUNCTION_event_t {                                        
+    enum EventType name;
+    enum EventPhase phase;                                                    
+    u64 id;                                                                    
+    u64 ts;          
+};                                                          
 
 
 int entry_trace_FUNCTION(struct pt_regs *ctx) {
@@ -206,36 +222,33 @@ int entry_trace_FUNCTION(struct pt_regs *ctx) {
   u64* start_ts = pid_map.lookup(&pid);
   if (start_ts == 0)                                      
     return 0;  
-  struct CATEGORY_FUNCTION_event_t event = {};
+  struct entry_CATEGORY_FUNCTION_event_t event = {};
   event.id = id;
   int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
   if (status == 0) {
     event.name = CATEGORY_FUNCTION_type;         
     event.phase = PHASE_BEGIN;
     event.uid = bpf_get_current_uid_gid();
-    event.ts = bpf_ktime_get_ns() - *start_ts;
-    events.ringbuf_output(&event, sizeof(struct CATEGORY_FUNCTION_event_t), 0);
+    event.ts = get_current_time(start_ts);
+    events.ringbuf_output(&event, sizeof(struct entry_CATEGORY_FUNCTION_event_t), 0);
   }
   return 0;
 }
 
 int exit_trace_FUNCTION(struct pt_regs *ctx) {
+  u64 tsp = bpf_ktime_get_ns() / 1000;
   u64 id = bpf_get_current_pid_tgid();
   u32 pid = id;
   u64 start = 0;
   u64* start_ts = pid_map.lookup(&pid);
   if (start_ts == 0)                                      
-    return 0;  
-  struct CATEGORY_FUNCTION_event_t event = {};
+    return 0;
+  struct exit_CATEGORY_FUNCTION_event_t event = {};
   event.id = id;
-  int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
-  if (status == 0) {
-    event.name = CATEGORY_FUNCTION_type;         
-    event.phase = PHASE_END;
-    event.uid = bpf_get_current_uid_gid();
-    event.ts = bpf_ktime_get_ns() - *start_ts;
-    events.ringbuf_output(&event, sizeof(struct CATEGORY_FUNCTION_event_t), 0);
-  }
+  event.name = CATEGORY_FUNCTION_type;         
+  event.phase = PHASE_END;
+  event.ts = get_current_time2(&tsp, start_ts);
+  events.ringbuf_output(&event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
   return 0;
 }
 """
@@ -633,11 +646,8 @@ for cat, functions in kprobe_functions.items():
                 exec = cat
                 if cat in so_dict:
                     exec = so_dict[cat]
-                
-                symbols = os.popen(f"nm {exec} | grep \" T \" | awk {{'print $3'}}").read().strip().split("\n")
-                for sym in symbols:
-                    b.attach_uprobe(name=exec, sym=sym, fn_name=f"entry_trace_{fn}")
-                    b.attach_uretprobe(name=exec, sym=sym, fn_name=f"exit_trace_{fn}")
+                b.attach_uprobe(name=exec, sym=fn, fn_name=f"entry_trace_{fn}")
+                b.attach_uretprobe(name=exec, sym=fn, fn_name=f"exit_trace_{fn}")
         except Exception as err:
             print(f"Unable to create probe for {cat} and {fn} {err}")
             pass
