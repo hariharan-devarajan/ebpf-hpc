@@ -97,7 +97,7 @@ enum EventPhase {
 BPF_RINGBUF_OUTPUT(events, 1 << 16);
 BPF_HASH(pid_map, u32, u64);
 BPF_HASH(temp_file_map, u64, const char*);
-BPF_HASH(file_map, u32, const char*);
+BPF_HASH(file_map, s32, const char*);
 
 """
 
@@ -455,7 +455,6 @@ bpf_close_args_input_set = """
     const char **filename = file_map.lookup(&fd);
     if (filename != 0) {
         int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-        file_map.delete(&fd);
     }
 """
 
@@ -758,7 +757,9 @@ bpf_text = bpf_text.replace("NAME_MAX",str(NAME_MAX))
 
 
 usdt_ctx = USDT(path=f"{dir}/build/libdftracer_ebpf.so")
-
+f = open("main.c", "w")
+f.write(bpf_text)
+f.close()
 b = BPF(text = bpf_text, usdt_contexts=[usdt_ctx])
 
 b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_get_pid", fn_name="trace_dftracer_get_pid")
