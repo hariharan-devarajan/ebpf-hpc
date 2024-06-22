@@ -89,7 +89,8 @@ bpf_header="""
 
 enum EventPhase {
     PHASE_BEGIN = 1,
-    PHASE_END = 2
+    PHASE_END = 2,
+    PHASE_INSTANT = 3,
 };
 
 //BPF_PERF_OUTPUT(events);
@@ -124,11 +125,9 @@ int trace_dftracer_remove_pid(struct pt_regs *ctx) {
     pid_map.delete(&pid);
     return 0;
 }
-
-
 """
 
-bpf_fn_template = """
+bpf_fn_sys_template = """
 struct entry_CATEGORY_FUNCTION_event_t {                                        
     enum EventType name;
     enum EventPhase phase;                                                     
@@ -184,6 +183,59 @@ RETURN CATEGORY__trace_exit_FUNCTION(struct pt_regs *ctx) {
   ARGS_OUTPUT_SET  
   events.ringbuf_output(&exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
   //events.perf_submit(ctx, &exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t));   
+  return 0;
+}
+"""
+
+
+bpf_fn_os_cache_template = """
+struct CATEGORY_FUNCTION_event_t {                                        
+    enum EventType name;
+    enum EventPhase phase;                                                     
+    u64 id;                                                                    
+    u64 ts;                                                                   
+    u32 uid;                                                                   
+    char process[TASK_COMM_LEN];
+};                                                                  
+
+
+int entry_trace_FUNCTION(struct pt_regs *ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = id;
+  u64 start = 0;
+  u64* start_ts = pid_map.lookup(&pid);
+  if (start_ts == 0)                                      
+    return 0;  
+  struct CATEGORY_FUNCTION_event_t event = {};
+  event.id = id;
+  int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
+  if (status == 0) {
+    event.name = CATEGORY_FUNCTION_type;         
+    event.phase = PHASE_BEGIN;
+    event.uid = bpf_get_current_uid_gid();
+    event.ts = bpf_ktime_get_ns() - *start_ts;
+    events.ringbuf_output(&event, sizeof(struct CATEGORY_FUNCTION_event_t), 0);
+  }
+  return 0;
+}
+
+int exit_trace_FUNCTION(struct pt_regs *ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = id;
+  u64 start = 0;
+  u64* start_ts = pid_map.lookup(&pid);
+  if (start_ts == 0)                                      
+    return 0;  
+  struct CATEGORY_FUNCTION_event_t event = {};
+  event.id = id;
+  int status = bpf_get_current_comm(&event.process, sizeof(event.process));    
+  if (status == 0) {
+    event.name = CATEGORY_FUNCTION_type;         
+    event.phase = PHASE_END;
+    event.uid = bpf_get_current_uid_gid();
+    event.ts = bpf_ktime_get_ns() - *start_ts;
+    events.ringbuf_output(&event, sizeof(struct CATEGORY_FUNCTION_event_t), 0);
+  }
   return 0;
 }
 """
@@ -311,13 +363,113 @@ bpf_close_output_set = """
 
 b_temp = BPF(text = "")
 keep_args = True
+ext4_read_fn = ""
+if BPF.get_kprobe_functions(b'ext4_file_read_iter'):
+    ext4_read_fn = 'ext4_file_read_iter'
+else:
+    ext4_read_fn = 'generic_file_read_iter'
+
 kprobe_functions = {
      b_temp.get_syscall_prefix().decode(): [("openat", keep_args, bpf_openat_entry_args_struct, bpf_openat_exit_args_struct, bpf_openat_entry_args,bpf_openat_args_input_set, bpf_openat_output_set, bpf_openat_fn_return),
                                             ("read", keep_args, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
                                             ("write", keep_args, bpf_write_entry_args_struct, bpf_write_exit_args_struct, bpf_write_entry_args,bpf_write_args_input_set, bpf_write_output_set, bpf_write_fn_return),
                                             ("close", keep_args, bpf_close_entry_args_struct, bpf_close_exit_args_struct, bpf_close_entry_args,bpf_close_args_input_set, bpf_close_output_set, bpf_close_fn_return),
+                                            ("copy_file_range", False, None, None, None, None, None, None),
+                                            ("execve", False, None, None, None, None, None, None),
+                                            ("execveat", False, None, None, None, None, None, None),
+                                            ("exit", False, None, None, None, None, None, None),
+                                            ("faccessat", False, None, None, None, None, None, None),
+                                            ("fcntl", False, None, None, None, None, None, None),
+                                            ("fallocate", False, None, None, None, None, None, None),
+                                            ("fdatasync", False, None, None, None, None, None, None),
+                                            ("flock", False, None, None, None, None, None, None),
+                                            ("fsopen", False, None, None, None, None, None, None),
+                                            ("fstatfs", False, None, None, None, None, None, None),
+                                            ("fsync", False, None, None, None, None, None, None),
+                                            ("ftruncate", False, None, None, None, None, None, None),
+                                            ("io_pgetevents", False, None, None, None, None, None, None),
+                                            ("lseek", False, None, None, None, None, None, None),
+                                            ("memfd_create", False, None, None, None, None, None, None),
+                                            ("migrate_pages", False, None, None, None, None, None, None),
+                                            ("mlock", False, None, None, None, None, None, None),
+                                            ("mmap", False, None, None, None, None, None, None),
+                                            ("msync", False, None, None, None, None, None, None),
+                                            ("pread64", False, None, None, None, None, None, None),
+                                            ("preadv", False, None, None, None, None, None, None),
+                                            ("preadv2", False, None, None, None, None, None, None),
+                                            ("pwrite64", False, None, None, None, None, None, None),
+                                            ("pwritev", False, None, None, None, None, None, None),
+                                            ("pwritev2", False, None, None, None, None, None, None),
+                                            ("readahead", False, None, None, None, None, None, None),
+                                            ("readlinkat", False, None, None, None, None, None, None),
+                                            ("readv", False, None, None, None, None, None, None),
+                                            ("renameat", False, None, None, None, None, None, None),
+                                            ("renameat2", False, None, None, None, None, None, None),
+                                            ("statfs", False, None, None, None, None, None, None),
+                                            ("statx", False, None, None, None, None, None, None),
+                                            ("sync", False, None, None, None, None, None, None),
+                                            ("sync_file_range", False, None, None, None, None, None, None),
+                                            ("syncfs", False, None, None, None, None, None, None),
+                                            ("writev", False, None, None, None, None, None, None),
+
+                                            ("kmem_cache_alloc", False, None, None, None, None, None, None),
+                                            ("shmem_alloc_inode", False, None, None, None, None, None, None),
                                             #("open", None, None, None, None)
-                                            ]
+                                            ],
+    "os_cache":[("add_to_page_cache_lru", False, None, None, None, None, None, None),
+        ("mark_page_accessed", False, None, None, None, None, None, None),
+        ("account_page_dirtied", False, None, None, None, None, None, None),
+        ("mark_buffer_dirty", False, None, None, None, None, None, None),
+        ("do_page_cache_ra", False, None, None, None, None, None, None),
+        ("__page_cache_alloc", False, None, None, None, None, None, None),
+        ],
+    "ext4":[(ext4_read_fn, False, None, None, None, None, None, None),
+            ("ext4_file_write_iter", False, None, None, None, None, None, None),
+            ("ext4_file_open", False, None, None, None, None, None, None),
+            ("ext4_sync_file", False, None, None, None, None, None, None),
+    ],
+    "c":[
+        ("open", False, None, None, None, None, None, None),
+        ("open64", False, None, None, None, None, None, None),
+        ("creat", False, None, None, None, None, None, None),
+        ("creat64", False, None, None, None, None, None, None),
+        ("close_range", False, None, None, None, None, None, None),
+        ("closefrom", False, None, None, None, None, None, None),
+        ("close", False, None, None, None, None, None, None),
+        ("read", False, None, None, None, None, None, None),
+        ("pread", False, None, None, None, None, None, None),
+        ("pread64", False, None, None, None, None, None, None),
+        ("write", False, None, None, None, None, None, None),
+        ("pwrite", False, None, None, None, None, None, None),
+        ("pwrite64", False, None, None, None, None, None, None),
+        ("lseek", False, None, None, None, None, None, None),
+        ("lseek64", False, None, None, None, None, None, None),
+        ("fdopen", False, None, None, None, None, None, None),
+        ("fileno", False, None, None, None, None, None, None),
+        ("fileno_unlocked", False, None, None, None, None, None, None),
+        ("mmap", False, None, None, None, None, None, None),
+        ("mmap64", False, None, None, None, None, None, None),
+        ("munmap", False, None, None, None, None, None, None),
+        ("msync", False, None, None, None, None, None, None),
+        ("mremap", False, None, None, None, None, None, None),
+        ("madvise", False, None, None, None, None, None, None),
+        ("shm_open", False, None, None, None, None, None, None),
+        ("shm_unlink", False, None, None, None, None, None, None),
+        ("memfd_create", False, None, None, None, None, None, None),
+        ("fsync", False, None, None, None, None, None, None),
+        ("fdatasync", False, None, None, None, None, None, None),
+        ("fcntl", False, None, None, None, None, None, None),
+
+        ("malloc", False, None, None, None, None, None, None),
+        ("calloc", False, None, None, None, None, None, None),
+        ("realloc", False, None, None, None, None, None, None),
+        ("posix_memalign", False, None, None, None, None, None, None),
+        ("valloc", False, None, None, None, None, None, None),
+        ("memalign", False, None, None, None, None, None, None),
+        ("pvalloc", False, None, None, None, None, None, None),
+        ("aligned_alloc", False, None, None, None, None, None, None),
+        ("free", False, None, None, None, None, None, None),
+    ],
 }
 
 event_index = {}
@@ -327,21 +479,25 @@ functions_bpf = ""
 fn_count = 1
 for cat, functions in kprobe_functions.items():
     for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
-        specific = bpf_fn_template
-        if has_args:
-            specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
-            specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
-            specific = specific.replace("ENTRY_ARGS", entry_fn_args)
-            specific = specific.replace("ARGS_INPUT_SET", entry_assign)
-            specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
-            specific = specific.replace("RETURN", ret)
-        else:            
-            specific = specific.replace("ENTRY_ARGS_DECL", "")
-            specific = specific.replace("EXIT_ARGS_DECL","")
-            specific = specific.replace("ENTRY_ARGS", "")
-            specific = specific.replace("ARGS_INPUT_SET", "")
-            specific = specific.replace("ARGS_OUTPUT_SET", "")
-            specific = specific.replace("RETURN", "int")
+        specific = ""
+        if "sys" in cat:
+            specific = bpf_fn_sys_template
+            if has_args:
+                specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
+                specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
+                specific = specific.replace("ENTRY_ARGS", entry_fn_args)
+                specific = specific.replace("ARGS_INPUT_SET", entry_assign)
+                specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
+                specific = specific.replace("RETURN", ret)
+            else:            
+                specific = specific.replace("ENTRY_ARGS_DECL", "")
+                specific = specific.replace("EXIT_ARGS_DECL","")
+                specific = specific.replace("ENTRY_ARGS", "")
+                specific = specific.replace("ARGS_INPUT_SET", "")
+                specific = specific.replace("ARGS_OUTPUT_SET", "")
+                specific = specific.replace("RETURN", "int")
+        elif cat in ["os_cache","ext4", "c"]:
+            specific = bpf_fn_os_cache_template
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
         functions_bpf += specific
@@ -356,7 +512,7 @@ bpf_events_enum = bpf_events_enum.replace("EVENT_TYPES", event_type_enum)
 bpf_text = bpf_header + bpf_events_enum + bpf_utils + functions_bpf
 bpf_text = bpf_text.replace("TASK_COMM_LEN",str(TASK_COMM_LEN))
 bpf_text = bpf_text.replace("NAME_MAX",str(NAME_MAX))
-print(bpf_text)
+#print(bpf_text)
 
 
 usdt_ctx = USDT(path=f"{dir}/build/libdftracer_ebpf.so")
@@ -367,16 +523,28 @@ b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_get_pid",
 b.attach_uprobe(name=f"{dir}/build/libdftracer_ebpf.so", sym="dftracer_remove_pid", fn_name="trace_dftracer_remove_pid")
 for cat, functions in kprobe_functions.items():
     for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
-        fnname = cat + fn
-        b.attach_kprobe(event=fnname, fn_name=f"syscall__trace_entry_{fn}")
-        b.attach_kretprobe(event=fnname, fn_name=f"{cat}__trace_exit_{fn}")
+        try:
+            if "sys" in cat:
+                fnname = cat + fn
+                b.attach_kprobe(event=fnname, fn_name=f"syscall__trace_entry_{fn}")
+                b.attach_kretprobe(event=fnname, fn_name=f"{cat}__trace_exit_{fn}")
+            elif cat in ["os_cache","ext4"]:
+                fnname = fn
+                b.attach_kprobe(event=fnname, fn_name=f"entry_trace_{fn}")
+                b.attach_kretprobe(event=fnname, fn_name=f"exit_trace_{fn}")
+            elif cat in ["c"]:
+                b.attach_uprobe(name=cat, sym=fn, fn_name=f"entry_trace_{fn}")
+                b.attach_uretprobe(name=cat, sym=fn, fn_name=f"exit_trace_{fn}")
+        except Exception:
+            print(f"Unable to create probe for {cat} and {fn}")
+            pass
 
+
+#https://github.com/iovisor/bcc/blob/v0.18.0/tools/readahead.py
+# https://github.com/iovisor/bcc/blob/v0.18.0/examples/tracing/vfsreadlat.py
 
 matched = b.num_open_kprobes()
-
-if matched == 0:
-    print("0 functions matched by \"%s\". Exiting." % args.pattern)
-    exit()
+print(f"{matched} functions matched")
 
 initial_ts = 0
 
@@ -429,8 +597,22 @@ class GenericEvent(ctypes.Structure):
 
 index = 1
 
+def handle_single_event(data, level, group_idx):
+    global index, event_index
+    event = ctypes.cast(data, ctypes.POINTER(GenericEvent)).contents
+    obj = {"id":index}
+    obj["ph"] = "i"
+    obj["ts"] = event.ts
+    obj["dur"] = 0
+    obj["pid"] = event.id >> 32
+    obj["tid"] = event.id & 0xffffff
+    if event.name != 0 and event.name in event_index:
+        obj["name"] = event_index[event.name][0] + " " + event_index[event.name][1]
+        obj["cat"] = event_index[event.name][0]
+    return obj
+
 def handle_event(name, begin, end, level, group_idx):
-    global index
+    global index, event_index
     obj = {"id":index}
     has_begin = begin is not None
     has_end = end is not None
@@ -450,14 +632,14 @@ def handle_event(name, begin, end, level, group_idx):
             obj["pid"] = begin_event.id >> 32
             obj["tid"] = begin_event.id & 0xffffff
             if begin_event.name != 0 and begin_event.name in event_index:
-                obj["name"] = event_index[begin_event.name][1]
+                obj["name"] = event_index[begin_event.name][0] + " " + event_index[begin_event.name][1]
                 obj["cat"] = event_index[begin_event.name][0]
         else:
             obj["ts"] = end_event.ts
             obj["pid"] = end_event.id >> 32
             obj["tid"] = end_event.id & 0xffffff
             if end_event.name != 0 and end_event.name in event_index:
-                obj["name"] = event_index[end_event.name][1]
+                obj["name"] = event_index[end_event.name][0] + " " + event_index[end_event.name][1]
                 obj["cat"] = event_index[end_event.name][0]
     else:
         obj["ts"] = begin_event.ts
@@ -465,7 +647,7 @@ def handle_event(name, begin, end, level, group_idx):
         obj["pid"] = end_event.id >> 32
         obj["tid"] = end_event.id & 0xffffff
         if end_event.name in event_index:
-            obj["name"] = event_index[end_event.name][1]
+            obj["name"] = event_index[end_event.name][0] + " " + event_index[end_event.name][1]
             obj["cat"] = event_index[end_event.name][0]
     obj["ph"] = phase
     obj["args"] = {"level":level,"group_idx":group_idx}
@@ -482,6 +664,11 @@ def handle_event(name, begin, end, level, group_idx):
 stack = {}
 group_idx = 0
 extract_bits = lambda num, k, p: int(bin(num)[2:][p:p+k], 2)
+try:
+    os.remove("trace.pfw")
+except OSError:
+    pass
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -491,11 +678,15 @@ logging.basicConfig(
     format='%(message)s'
 )
 logging.info("[")
+import json
 # process event
 def print_event(cpu, data, size):
     try:
         global index, stack, group_idx
         event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
+        level = 0
+        if event_type.id in stack:
+            level = len(stack[event_type.id])
         if event_type.phase == 1: # BEGIN
             if event_type.id not in stack or len(stack[event_type.id]) == 0:
                 group_idx+=1
@@ -503,15 +694,17 @@ def print_event(cpu, data, size):
                 stack[event_type.id] = []
             stack[event_type.id].append(data)
         elif event_type.phase == 2: # END
-            level = 0
+            
             if event_type.id not in stack or len(stack[event_type.id]) == 0:
-                val = handle_event(event_type.name, None, data,level,group_idx)
+                val = handle_single_event(event_type.name, data,level,group_idx)
             else:
-                level = len(stack[event_type.id])
                 begin = stack[event_type.id].pop()
                 if event_type.name > 0:
                     val = handle_event(event_type.name, begin, data,level,group_idx)
-                    logging.info(val)
+            logging.info(json.dumps(val))
+        elif event_type.phase == 3: # INSTANT
+            val = handle_event(event_type.name, data, None,level,group_idx)
+            logging.info(json.dumps(val))
         return 
     except Exception as er:
        return

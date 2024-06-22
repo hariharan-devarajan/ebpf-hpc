@@ -6,6 +6,7 @@
 #include <string.h>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 class Timer {
 public:
@@ -50,8 +51,10 @@ int main(int argc, char *argv[]) {
   std::string dir = std::string(argv[4]);
   int trace = atoi(argv[5]);
   std::string data = gen_random(ts);
+  auto read_data = std::vector<char>(ts);
   Timer open_timer = Timer();
   Timer write_timer = Timer();
+  Timer read_timer = Timer();
   Timer close_timer = Timer();
   for (int file_idx = 0; file_idx < files; ++file_idx) {
 
@@ -64,6 +67,10 @@ int main(int argc, char *argv[]) {
       write_timer.resumeTime();
       write(fd, data.c_str(), ts);
       write_timer.pauseTime();
+      lseek(fd, -1 * ts, SEEK_CUR);
+      read_timer.resumeTime();
+      read(fd, read_data.data(), ts);
+      read_timer.pauseTime();
     }
     close_timer.resumeTime();
     close(fd);
@@ -81,10 +88,14 @@ int main(int argc, char *argv[]) {
   double total_write_time;
   MPI_Reduce(&write_time, &total_write_time, 1, MPI_DOUBLE, MPI_SUM, 0,
              MPI_COMM_WORLD);
+  double read_time = read_timer.getElapsedTime();
+  double total_read_time;
+  MPI_Reduce(&read_time, &total_read_time, 1, MPI_DOUBLE, MPI_SUM, 0,
+             MPI_COMM_WORLD);
   if (my_rank == 0) {
-    printf("%d,%d,%d,%d,%f,%f,%f\n", comm_size, trace, ops, ts,
+    printf("%d,%d,%d,%d,%f,%f,%f,%f\n", comm_size, trace, ops, ts,
            total_open_time / comm_size, total_close_time / comm_size,
-           total_write_time / comm_size);
+           total_write_time / comm_size, total_read_time / comm_size);
   }
   MPI_Finalize();
   return 0;
