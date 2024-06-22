@@ -205,17 +205,19 @@ struct entry_CATEGORY_FUNCTION_event_t {
     u64 id;                                                                    
     u64 ts;                                                                   
     u32 uid;                                                                   
-    char process[TASK_COMM_LEN];
+    char process[TASK_COMM_LEN];                                           
+    ENTRY_ARGS_DECL;
 };        
 struct exit_CATEGORY_FUNCTION_event_t {                                        
     enum EventType name;
     enum EventPhase phase;                                                    
     u64 id;                                                                    
-    u64 ts;          
+    u64 ts;                                                        
+    EXIT_ARGS_DECL;    
 };                                                          
 
 
-int entry_trace_FUNCTION(struct pt_regs *ctx) {
+RETURN entry_trace_FUNCTION(struct pt_regs *ctx ENTRY_ARGS) {
   u64 id = bpf_get_current_pid_tgid();
   u32 pid = id;
   u64 start = 0;
@@ -228,14 +230,15 @@ int entry_trace_FUNCTION(struct pt_regs *ctx) {
   if (status == 0) {
     event.name = CATEGORY_FUNCTION_type;         
     event.phase = PHASE_BEGIN;
-    event.uid = bpf_get_current_uid_gid();
+    event.uid = bpf_get_current_uid_gid();                                       
+    ARGS_INPUT_SET
     event.ts = get_current_time(start_ts);
     events.ringbuf_output(&event, sizeof(struct entry_CATEGORY_FUNCTION_event_t), 0);
   }
   return 0;
 }
 
-int exit_trace_FUNCTION(struct pt_regs *ctx) {
+RETURN exit_trace_FUNCTION(struct pt_regs *ctx) {
   u64 tsp = bpf_ktime_get_ns() / 1000;
   u64 id = bpf_get_current_pid_tgid();
   u32 pid = id;
@@ -243,12 +246,13 @@ int exit_trace_FUNCTION(struct pt_regs *ctx) {
   u64* start_ts = pid_map.lookup(&pid);
   if (start_ts == 0)                                      
     return 0;
-  struct exit_CATEGORY_FUNCTION_event_t event = {};
-  event.id = id;
-  event.name = CATEGORY_FUNCTION_type;         
-  event.phase = PHASE_END;
-  event.ts = get_current_time2(&tsp, start_ts);
-  events.ringbuf_output(&event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
+  struct exit_CATEGORY_FUNCTION_event_t exit_event = {};
+  exit_event.id = id;
+  exit_event.name = CATEGORY_FUNCTION_type;         
+  exit_event.phase = PHASE_END;
+  exit_event.ts = get_current_time2(&tsp, start_ts);
+  ARGS_OUTPUT_SET  
+  events.ringbuf_output(&exit_event, sizeof(struct exit_CATEGORY_FUNCTION_event_t), 0);
   return 0;
 }
 """
@@ -291,11 +295,41 @@ bpf_openat_output_set = """
     }
 """
 
+# Open structures
+
+bpf_open_entry_args_struct = """
+  int flags;
+  char fname[NAME_MAX];
+"""
+
+bpf_open_exit_args_struct = """
+  int ret;
+"""
+
+bpf_open_fn_return = "int"
+
+bpf_open_entry_args = ", const char *filename, int flags"
+
+bpf_open_args_input_set = """
+    event.flags = flags;
+    int len = bpf_probe_read_user_str(&event.fname, sizeof(event.fname), filename);
+    temp_file_map.update(&event.id, &event.fname);
+"""
+
+bpf_open_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+    const char **filename = temp_file_map.lookup(&exit_event.id);
+    if (filename != 0) {
+        file_map.update(&exit_event.ret, filename);
+        temp_file_map.delete(&exit_event.id);
+    }
+"""
+
 # read structures
 
 bpf_read_entry_args_struct = """
-  char fname[NAME_MAX];
   u32 count;
+  char fname[NAME_MAX];
 """
 
 bpf_read_exit_args_struct = """
@@ -318,11 +352,40 @@ bpf_read_output_set = """
     exit_event.ret = PT_REGS_RC(ctx);
 """
 
+# pread structures
+
+bpf_pread_entry_args_struct = """
+  u32 count;
+  s64 offset;
+  char fname[NAME_MAX];
+"""
+
+bpf_pread_exit_args_struct = """
+  int ret;
+"""
+
+bpf_pread_fn_return = "int"
+
+bpf_pread_entry_args = ", int fd, void *data, u32 count, s64 offset"
+
+bpf_pread_args_input_set = """
+    event.count = count;
+    event.offset = offset;
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+    }
+"""
+
+bpf_pread_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+"""
+
 # write structures
 
 bpf_write_entry_args_struct = """
-  char fname[NAME_MAX];
   u32 count;
+  char fname[NAME_MAX];
 """
 
 bpf_write_exit_args_struct = """
@@ -342,6 +405,34 @@ bpf_write_args_input_set = """
 """
 
 bpf_write_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+"""
+# pwrite structures
+
+bpf_pwrite_entry_args_struct = """
+  u32 count;
+  s64 offset;
+  char fname[NAME_MAX];
+"""
+
+bpf_pwrite_exit_args_struct = """
+  int ret;
+"""
+
+bpf_pwrite_fn_return = "int"
+
+bpf_pwrite_entry_args = ", int fd, const void *data, u32 count, s64 offset"
+
+bpf_pwrite_args_input_set = """
+    event.count = count;
+    event.offset = offset;
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+    }
+"""
+
+bpf_pwrite_output_set = """
     exit_event.ret = PT_REGS_RC(ctx);
 """
 
@@ -369,6 +460,34 @@ bpf_close_args_input_set = """
 """
 
 bpf_close_output_set = """
+    exit_event.ret = PT_REGS_RC(ctx);
+
+"""
+
+
+# generic_fd structures
+
+bpf_generic_fd_entry_args_struct = """
+  char fname[NAME_MAX];
+"""
+
+bpf_generic_fd_exit_args_struct = """
+  int ret;
+"""
+
+bpf_generic_fd_fn_return = "int"
+
+bpf_generic_fd_entry_args = ", int fd"
+
+bpf_generic_fd_args_input_set = """
+    const char **filename = file_map.lookup(&fd);
+    if (filename != 0) {
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
+        file_map.delete(&fd);
+    }
+"""
+
+bpf_generic_fd_output_set = """
     exit_event.ret = PT_REGS_RC(ctx);
 
 """
@@ -447,19 +566,19 @@ kprobe_functions = {
             ("ext4_sync_file", False, None, None, None, None, None, None),
     ],
     "c":[
-        ("open", False, None, None, None, None, None, None),
-        ("open64", False, None, None, None, None, None, None),
-        ("creat", False, None, None, None, None, None, None),
-        ("creat64", False, None, None, None, None, None, None),
+        ("open", True, bpf_open_entry_args_struct, bpf_open_exit_args_struct, bpf_open_entry_args,bpf_open_args_input_set, bpf_open_output_set, bpf_open_fn_return),
+        ("open64", True, bpf_open_entry_args_struct, bpf_open_exit_args_struct, bpf_open_entry_args,bpf_open_args_input_set, bpf_open_output_set, bpf_open_fn_return),
+        ("creat", True, bpf_open_entry_args_struct, bpf_open_exit_args_struct, bpf_open_entry_args,bpf_open_args_input_set, bpf_open_output_set, bpf_open_fn_return),
+        ("creat64", True, bpf_open_entry_args_struct, bpf_open_exit_args_struct, bpf_open_entry_args,bpf_open_args_input_set, bpf_open_output_set, bpf_open_fn_return),
         ("close_range", False, None, None, None, None, None, None),
         ("closefrom", False, None, None, None, None, None, None),
-        ("close", False, None, None, None, None, None, None),
-        ("read", False, None, None, None, None, None, None),
-        ("pread", False, None, None, None, None, None, None),
-        ("pread64", False, None, None, None, None, None, None),
-        ("write", False, None, None, None, None, None, None),
-        ("pwrite", False, None, None, None, None, None, None),
-        ("pwrite64", False, None, None, None, None, None, None),
+        ("close", True, bpf_close_entry_args_struct, bpf_close_exit_args_struct, bpf_close_entry_args,bpf_close_args_input_set, bpf_close_output_set, bpf_close_fn_return),
+        ("read", True, bpf_read_entry_args_struct, bpf_read_exit_args_struct, bpf_read_entry_args,bpf_read_args_input_set, bpf_read_output_set, bpf_read_fn_return),
+        ("pread", True, bpf_pread_entry_args_struct, bpf_pread_exit_args_struct, bpf_pread_entry_args,bpf_pread_args_input_set, bpf_pread_output_set, bpf_pread_fn_return),
+        ("pread64", True, bpf_pread_entry_args_struct, bpf_pread_exit_args_struct, bpf_pread_entry_args,bpf_pread_args_input_set, bpf_pread_output_set, bpf_pread_fn_return),
+        ("write", True, bpf_write_entry_args_struct, bpf_write_exit_args_struct, bpf_write_entry_args,bpf_write_args_input_set, bpf_write_output_set, bpf_write_fn_return),
+        ("pwrite", True, bpf_pwrite_entry_args_struct, bpf_pwrite_exit_args_struct, bpf_pwrite_entry_args,bpf_pwrite_args_input_set, bpf_pwrite_output_set, bpf_pwrite_fn_return),
+        ("pwrite64", True, bpf_pwrite_entry_args_struct, bpf_pwrite_exit_args_struct, bpf_pwrite_entry_args,bpf_pwrite_args_input_set, bpf_pwrite_output_set, bpf_pwrite_fn_return),
         ("lseek", False, None, None, None, None, None, None),
         ("lseek64", False, None, None, None, None, None, None),
         ("fdopen", False, None, None, None, None, None, None),
@@ -581,27 +700,46 @@ event_index = {}
 event_type_enum = ""
 functions_bpf = ""
 fn_count = 1
+open_fn_idx = {}
+read_fn_idx = {}
+pread_fn_idx = {}
+write_fn_idx = {}
+pwrite_fn_idx = {}
+close_fn_idx = {}
 for cat, functions in kprobe_functions.items():
     for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
         specific = ""
         if "sys" in cat:
             specific = bpf_fn_sys_template
-            if has_args:
-                specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
-                specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
-                specific = specific.replace("ENTRY_ARGS", entry_fn_args)
-                specific = specific.replace("ARGS_INPUT_SET", entry_assign)
-                specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
-                specific = specific.replace("RETURN", ret)
-            else:            
-                specific = specific.replace("ENTRY_ARGS_DECL", "")
-                specific = specific.replace("EXIT_ARGS_DECL","")
-                specific = specific.replace("ENTRY_ARGS", "")
-                specific = specific.replace("ARGS_INPUT_SET", "")
-                specific = specific.replace("ARGS_OUTPUT_SET", "")
-                specific = specific.replace("RETURN", "int")
         elif cat in ["os_cache","ext4", "c", "mpi", "user"]:
             specific = bpf_fn_os_cache_template
+        if has_args:
+            specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
+            specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
+            specific = specific.replace("ENTRY_ARGS", entry_fn_args)
+            specific = specific.replace("ARGS_INPUT_SET", entry_assign)
+            specific = specific.replace("ARGS_OUTPUT_SET", exit_assign)
+            specific = specific.replace("RETURN", ret)
+            if fn in ["open", "open64", "creat", "creat64"]:
+                open_fn_idx[fn_count] = True
+            elif fn in ["read"]:
+                read_fn_idx[fn_count] = True
+            elif fn in ["pread","pread64"]:
+                pread_fn_idx[fn_count] = True
+            elif fn in ["write"]:
+                write_fn_idx[fn_count] = True
+            elif fn in ["pwrite","pwrite64"]:
+                pwrite_fn_idx[fn_count] = True
+            elif fn in ["close"]:
+                close_fn_idx[fn_count] = True
+        else:            
+            specific = specific.replace("ENTRY_ARGS_DECL", "")
+            specific = specific.replace("EXIT_ARGS_DECL","")
+            specific = specific.replace("ENTRY_ARGS", "")
+            specific = specific.replace("ARGS_INPUT_SET", "")
+            specific = specific.replace("ARGS_OUTPUT_SET", "")
+            specific = specific.replace("RETURN", "int")
+        
         specific = specific.replace("CATEGORY", cat)
         specific = specific.replace("FUNCTION", fn)
         functions_bpf += specific
@@ -676,101 +814,120 @@ class Eventype(ctypes.Structure):
         ('id', ctypes.c_uint64),
         ('ts', ctypes.c_uint64),
     ]
-
-class OpenAtEventBegin(ctypes.Structure):
+    level:int
+class GenericStartEvent(Eventype):
     _fields_ = [
-        ('name', ctypes.c_int),
-        ('phase', ctypes.c_int),
-        ('id', ctypes.c_uint64),
-        ('ts', ctypes.c_uint64),
         ('uid', ctypes.c_uint32),
-        ('process', ctypes.c_char * TASK_COMM_LEN), 
+        ('process', ctypes.c_char * TASK_COMM_LEN) 
+    ]
+class GenericEndEvent(Eventype):
+   pass
+
+class OpenAtEventBegin(GenericStartEvent):
+    _fields_ = [
         ('flags', ctypes.c_int),
         ('dfd', ctypes.c_int),
         ('fname', ctypes.c_char * NAME_MAX), 
     ]
-class OpenAtEventEnd(ctypes.Structure):
+class OpenAtEventEnd(GenericEndEvent):
     _fields_ = [
-        ('name', ctypes.c_int),
-        ('phase', ctypes.c_int),
-        ('id', ctypes.c_uint64),
-        ('ts', ctypes.c_uint64),
         ('ret', ctypes.c_int),
     ]
 
-class GenericEvent(ctypes.Structure):
+class OpenEventBegin(GenericStartEvent):
     _fields_ = [
-        ('name', ctypes.c_int),
-        ('phase', ctypes.c_int),
-        ('id', ctypes.c_uint64),
-        ('ts', ctypes.c_uint64),
-        ('uid', ctypes.c_uint32),
-        ('process', ctypes.c_char * TASK_COMM_LEN) 
+        ('flags', ctypes.c_int),
+        ('fname', ctypes.c_char * NAME_MAX), 
     ]
+class OpenEventEnd(OpenAtEventEnd):
+    pass
+
+class OpenEventBegin(GenericStartEvent):
+    _fields_ = [
+        ('flags', ctypes.c_int),
+        ('fname', ctypes.c_char * NAME_MAX), 
+    ]
+class OpenEventEnd(OpenAtEventEnd):
+    pass
+
+class CloseEventBegin(GenericStartEvent):
+    _fields_ = [
+        ('fname', ctypes.c_char * NAME_MAX), 
+    ]
+class CloseEventEnd(OpenAtEventEnd):
+    pass
+
+class RWEventBegin(GenericStartEvent):
+    _fields_ = [
+        ('count', ctypes.c_int),
+        ('fname', ctypes.c_char * NAME_MAX), 
+    ]
+class RWEventEnd(OpenAtEventEnd):
+    pass
+
+class PRWEventBegin(GenericStartEvent):
+    _fields_ = [
+        ('count', ctypes.c_int),
+        ('offset', ctypes.c_int64),
+        ('fname', ctypes.c_char * NAME_MAX), 
+    ]
+class PRWEventEnd(OpenAtEventEnd):
+    pass
+
+
 
 index = 1
 
-def handle_single_event(data, level, group_idx):
+def handle_single_event(event):
     global index, event_index
-    event = ctypes.cast(data, ctypes.POINTER(GenericEvent)).contents
-    obj = {"id":index}
-    obj["ph"] = "i"
-    obj["ts"] = event.ts
-    obj["dur"] = 0
-    obj["pid"] = event.id >> 32
-    obj["tid"] = event.id & 0xffffff
-    if event.name != 0 and event.name in event_index:
-        obj["name"] = event_index[event.name][0] + " " + event_index[event.name][1]
-        obj["cat"] = event_index[event.name][0]
+    obj = {
+        "id":   index,
+        "ts":   event.ts,
+        "pid":  event.id >> 32,
+        "tid":  event.id & 0xffffff,
+        "ph":   "i",
+        "name": event_index[event.name][0] + " " +event_index[event.name][1],
+        "cat": event_index[event.name][0],
+        "args": {
+        }
+    }
     return obj
 
-def handle_event(name, begin, end, level, group_idx):
+def handle_event(begin, end):
     global index, event_index
-    obj = {"id":index}
-    has_begin = begin is not None
-    has_end = end is not None
-    phase = "X"
-    obj["ts"] = 0
-    id = 0
-    begin_event = None
-    end_event = None
-    if has_begin:
-        begin_event = ctypes.cast(begin, ctypes.POINTER(OpenAtEventBegin)).contents
-    if has_end:
-        end_event = ctypes.cast(end, ctypes.POINTER(OpenAtEventEnd)).contents
-    if not (has_begin and has_end):
-        phase = "i"
-        if has_begin:
-            obj["ts"] = begin_event.ts
-            obj["pid"] = begin_event.id >> 32
-            obj["tid"] = begin_event.id & 0xffffff
-            if begin_event.name != 0 and begin_event.name in event_index:
-                obj["name"] = event_index[begin_event.name][0] + " " + event_index[begin_event.name][1]
-                obj["cat"] = event_index[begin_event.name][0]
-        else:
-            obj["ts"] = end_event.ts
-            obj["pid"] = end_event.id >> 32
-            obj["tid"] = end_event.id & 0xffffff
-            if end_event.name != 0 and end_event.name in event_index:
-                obj["name"] = event_index[end_event.name][0] + " " + event_index[end_event.name][1]
-                obj["cat"] = event_index[end_event.name][0]
-    else:
-        obj["ts"] = begin_event.ts
-        obj["dur"] = end_event.ts - begin_event.ts
-        obj["pid"] = end_event.id >> 32
-        obj["tid"] = end_event.id & 0xffffff
-        if end_event.name in event_index:
-            obj["name"] = event_index[end_event.name][0] + " " + event_index[end_event.name][1]
-            obj["cat"] = event_index[end_event.name][0]
-    obj["ph"] = phase
-    obj["args"] = {"level":level,"group_idx":group_idx}
-    if (name == 1):
-        if has_begin:            
-            obj["args"]["fname"] = begin_event.fname.decode()
-            obj["args"]["dfd"] = begin_event.dfd
-            obj["args"]["flags"] = begin_event.flags
-        if has_end:            
-            obj["args"]["ret"] = end_event.ret
+    obj = {
+        "id":   index,
+        "ts":   begin.ts,
+        "dur":  end.ts - begin.ts,
+        "ph":   "X",
+        "pid":  begin.id >> 32,
+        "tid":  begin.id & 0xffffff,
+        "name": event_index[begin.name][0] + " " +event_index[begin.name][1],
+        "cat": event_index[begin.name][0],
+        "args": {
+        }
+    }
+    if begin.name == 1:
+        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["dfd"] = begin.dfd
+        obj["args"]["flags"] = begin.flags
+        obj["args"]["ret"] = end.ret
+    elif begin.name in open_fn_idx:
+        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["flags"] = begin.flags
+        obj["args"]["ret"] = end.ret
+    elif begin.name in close_fn_idx:
+        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["ret"] = end.ret
+    elif begin.name in read_fn_idx or  begin.name in write_fn_idx:
+        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["count"] = begin.count
+        obj["args"]["ret"] = end.ret
+    elif begin.name in pread_fn_idx or  begin.name in pwrite_fn_idx:
+        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["count"] = begin.count
+        obj["args"]["offset"] = begin.offset
+        obj["args"]["ret"] = end.ret
     index += 1
     return obj
 
@@ -793,37 +950,57 @@ logging.basicConfig(
 logging.info("[")
 import json
 last_updated = datetime.now()
+
 # process event
 def print_event(cpu, data, size):
     global last_updated
     last_updated = datetime.now()
-    try:
-        global index, stack, group_idx
-        event_type = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
-        level = 0
-        if event_type.id in stack:
-            level = len(stack[event_type.id])
-        if event_type.phase == 1: # BEGIN
-            if event_type.id not in stack or len(stack[event_type.id]) == 0:
-                group_idx+=1
-            if event_type.id not in stack:
-                stack[event_type.id] = []
-            stack[event_type.id].append(data)
-        elif event_type.phase == 2: # END
-            
-            if event_type.id not in stack or len(stack[event_type.id]) == 0:
-                val = handle_single_event(event_type.name, data,level,group_idx)
-            else:
-                begin = stack[event_type.id].pop()
-                if event_type.name > 0:
-                    val = handle_event(event_type.name, begin, data,level,group_idx)
-            logging.info(json.dumps(val))
-        elif event_type.phase == 3: # INSTANT
-            val = handle_event(event_type.name, data, None,level,group_idx)
-            logging.info(json.dumps(val))
-        return 
-    except Exception as er:
-       return
+    global index, stack, group_idx
+    basic_event = ctypes.cast(data, ctypes.POINTER(Eventype)).contents
+    if basic_event.name == 1:
+        if basic_event.phase == 1:
+            event = ctypes.cast(data, ctypes.POINTER(OpenAtEventBegin)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(OpenAtEventEnd)).contents
+    elif basic_event.name in open_fn_idx:
+        if basic_event.phase == 1:
+            event = ctypes.cast(data, ctypes.POINTER(OpenEventBegin)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(OpenEventEnd)).contents
+    elif basic_event.name in close_fn_idx:
+        if basic_event.phase == 1:
+            event = ctypes.cast(data, ctypes.POINTER(CloseEventBegin)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(CloseEventEnd)).contents
+    elif basic_event.name in read_fn_idx or  basic_event.name in write_fn_idx:
+        if basic_event.phase == 1:
+            event = ctypes.cast(data, ctypes.POINTER(RWEventBegin)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(RWEventEnd)).contents
+    elif basic_event.name in pread_fn_idx or  basic_event.name in pwrite_fn_idx:
+        if basic_event.phase == 1:
+            event = ctypes.cast(data, ctypes.POINTER(PRWEventBegin)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(PRWEventEnd)).contents
+    else:
+        if basic_event.phase == 2:
+            event = ctypes.cast(data, ctypes.POINTER(GenericEndEvent)).contents
+        else:
+            event = ctypes.cast(data, ctypes.POINTER(GenericStartEvent)).contents
+    if event.id not in stack:
+        stack[event.id] = {}
+    if event.name not in stack[event.id]:
+        stack[event.id][event.name] = []
+    if event.phase == 1: # BEGIN
+        stack[event.id][event.name].append(event)
+    elif event.phase == 2: # END
+        begin = stack[event.id][event.name].pop()
+        val = handle_event(begin, event)
+        logging.info(json.dumps(val))
+    elif event.phase == 3: # INSTANT
+        val = handle_single_event(event)
+        logging.info(json.dumps(val))
+    return 
     global initial_ts
 
     skip = False
