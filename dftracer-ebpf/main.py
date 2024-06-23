@@ -93,11 +93,14 @@ enum EventPhase {
     PHASE_INSTANT = 3,
 };
 
+struct Filename {
+    char fname[NAME_MAX];
+};
+
 //BPF_PERF_OUTPUT(events);
 BPF_RINGBUF_OUTPUT(events, 1 << 16);
 BPF_HASH(pid_map, u32, u64);
 BPF_HASH(temp_file_map, u64, const char*);
-BPF_HASH(file_map, s32, const char*);
 
 """
 
@@ -272,7 +275,7 @@ bpf_openat_entry_args_struct = """
 """
 
 bpf_openat_exit_args_struct = """
-  int ret;
+  int fd;
 """
 
 bpf_openat_fn_return = "int"
@@ -287,12 +290,8 @@ bpf_openat_args_input_set = """
 """
 
 bpf_openat_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
-    const char **filename = temp_file_map.lookup(&exit_event.id);
-    if (filename != 0) {
-        file_map.update(&exit_event.ret, filename);
-        temp_file_map.delete(&exit_event.id);
-    }
+    exit_event.fd = PT_REGS_RC(ctx);
+    temp_file_map.delete(&exit_event.id);
 """
 
 # Open structures
@@ -303,7 +302,7 @@ bpf_open_entry_args_struct = """
 """
 
 bpf_open_exit_args_struct = """
-  int ret;
+  int fd;
 """
 
 bpf_open_fn_return = "int"
@@ -317,129 +316,117 @@ bpf_open_args_input_set = """
 """
 
 bpf_open_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
-    const char **filename = temp_file_map.lookup(&exit_event.id);
-    if (filename != 0) {
-        file_map.update(&exit_event.ret, filename);
-        temp_file_map.delete(&exit_event.id);
-    }
+    exit_event.fd = PT_REGS_RC(ctx);
 """
 
 # read structures
 
 bpf_read_entry_args_struct = """
-  u32 count;
+  u64 count;
+  int fd;
   char fname[NAME_MAX];
 """
 
 bpf_read_exit_args_struct = """
-  int ret;
+  s64 size;
 """
 
 bpf_read_fn_return = "int"
 
-bpf_read_entry_args = ", int fd, void *data, u32 count"
+bpf_read_entry_args = ", int fd, void *data, u64 count"
 
 bpf_read_args_input_set = """
     event.count = count;
-    const char **filename = file_map.lookup(&fd);
-    if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-    }
+    event.fd = fd;
 """
 
 bpf_read_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
+    exit_event.size = PT_REGS_RC(ctx);
 """
 
 # pread structures
 
 bpf_pread_entry_args_struct = """
-  u32 count;
+  u64 count;
   s64 offset;
+  int fd;
   char fname[NAME_MAX];
 """
 
 bpf_pread_exit_args_struct = """
-  int ret;
+  s64 size;
 """
 
 bpf_pread_fn_return = "int"
 
-bpf_pread_entry_args = ", int fd, void *data, u32 count, s64 offset"
+bpf_pread_entry_args = ", int fd, void *data, u64 count, s64 offset"
 
 bpf_pread_args_input_set = """
     event.count = count;
     event.offset = offset;
-    const char **filename = file_map.lookup(&fd);
-    if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-    }
+    event.fd = fd;
 """
 
 bpf_pread_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
+    exit_event.size = PT_REGS_RC(ctx);
 """
 
 # write structures
 
 bpf_write_entry_args_struct = """
-  u32 count;
+  u64 count;
+  int fd;
   char fname[NAME_MAX];
 """
 
 bpf_write_exit_args_struct = """
-  int ret;
+  s64 size;
 """
 
 bpf_write_fn_return = "int"
 
-bpf_write_entry_args = ", int fd, const void *data, u32 count"
+bpf_write_entry_args = ", int fd, const void *data, u64 count"
 
 bpf_write_args_input_set = """
     event.count = count;
-    const char **filename = file_map.lookup(&fd);
-    if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-    }
+    event.fd = fd;
 """
 
 bpf_write_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
+    exit_event.size = PT_REGS_RC(ctx);
 """
 # pwrite structures
 
 bpf_pwrite_entry_args_struct = """
-  u32 count;
+  u64 count;
   s64 offset;
+  int fd;
   char fname[NAME_MAX];
 """
 
 bpf_pwrite_exit_args_struct = """
-  int ret;
+  s64 size;
 """
 
 bpf_pwrite_fn_return = "int"
 
-bpf_pwrite_entry_args = ", int fd, const void *data, u32 count, s64 offset"
+bpf_pwrite_entry_args = ", int fd, const void *data, u64 count, s64 offset"
 
 bpf_pwrite_args_input_set = """
     event.count = count;
     event.offset = offset;
-    const char **filename = file_map.lookup(&fd);
-    if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-    }
+    event.fd = fd;
 """
 
 bpf_pwrite_output_set = """
-    exit_event.ret = PT_REGS_RC(ctx);
+    exit_event.size = PT_REGS_RC(ctx);
 """
 
 
 # close structures
 
 bpf_close_entry_args_struct = """
+  int fd;
   char fname[NAME_MAX];
 """
 
@@ -452,10 +439,7 @@ bpf_close_fn_return = "int"
 bpf_close_entry_args = ", int fd"
 
 bpf_close_args_input_set = """
-    const char **filename = file_map.lookup(&fd);
-    if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-    }
+    event.fd = fd;
 """
 
 bpf_close_output_set = """
@@ -479,10 +463,9 @@ bpf_generic_fd_fn_return = "int"
 bpf_generic_fd_entry_args = ", int fd"
 
 bpf_generic_fd_args_input_set = """
-    const char **filename = file_map.lookup(&fd);
+    struct Filename *filename = file_map.lookup(&fd);
     if (filename != 0) {
-        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), *filename);
-        file_map.delete(&fd);
+        int len = bpf_probe_read_kernel_str(&event.fname, sizeof(event.fname), filename->fname);
     }
 """
 
@@ -563,6 +546,26 @@ kprobe_functions = {
             ("ext4_file_write_iter", False, None, None, None, None, None, None),
             ("ext4_file_open", False, None, None, None, None, None, None),
             ("ext4_sync_file", False, None, None, None, None, None, None),
+            ("ext4_alloc_da_blocks", False, None, None, None, None, None, None),
+            ("ext4_da_release_space", False, None, None, None, None, None, None),
+            ("ext4_da_reserve_space", False, None, None, None, None, None, None),
+            ("ext4_da_write_begin", False, None, None, None, None, None, None),
+            ("ext4_da_write_end", False, None, None, None, None, None, None),
+            ("ext4_discard_preallocations", False, None, None, None, None, None, None),
+            ("ext4_fallocate", False, None, None, None, None, None, None),
+            ("ext4_free_blocks", False, None, None, None, None, None, None),
+            ("ext4_readpage", False, None, None, None, None, None, None),
+            ("ext4_remove_blocks", False, None, None, None, None, None, None),
+            ("ext4_sync_fs", False, None, None, None, None, None, None),
+            ("ext4_truncate", False, None, None, None, None, None, None),
+            ("ext4_write_begin", False, None, None, None, None, None, None),
+            ("ext4_write_end", False, None, None, None, None, None, None),
+            ("ext4_writepage", False, None, None, None, None, None, None),
+            ("ext4_writepages", False, None, None, None, None, None, None),
+            ("ext4_zero_range", False, None, None, None, None, None, None),
+    ],
+    "vfs":[
+        ("^vfs_.*", False, None, None, None, None, None, None),
     ],
     "c":[
         ("open", True, bpf_open_entry_args_struct, bpf_open_exit_args_struct, bpf_open_entry_args,bpf_open_args_input_set, bpf_open_output_set, bpf_open_fn_return),
@@ -708,10 +711,14 @@ close_fn_idx = {}
 for cat, functions in kprobe_functions.items():
     for fn, has_args, entry_struct, exit_struct, entry_fn_args, entry_assign, exit_assign, ret in functions:
         specific = ""
+        func = fn
         if "sys" in cat:
             specific = bpf_fn_sys_template
         elif cat in ["os_cache","ext4", "c", "mpi", "user"]:
             specific = bpf_fn_os_cache_template
+        elif cat in ["vfs"]:
+            specific = bpf_fn_os_cache_template
+            func = cat
         if has_args:
             specific = specific.replace("ENTRY_ARGS_DECL", entry_struct)
             specific = specific.replace("EXIT_ARGS_DECL", exit_struct)
@@ -740,12 +747,12 @@ for cat, functions in kprobe_functions.items():
             specific = specific.replace("RETURN", "int")
         
         specific = specific.replace("CATEGORY", cat)
-        specific = specific.replace("FUNCTION", fn)
+        specific = specific.replace("FUNCTION", func)
         functions_bpf += specific
         event_type_enum += f"""
-            {cat}_{fn}_type={fn_count},
+            {cat}_{func}_type={fn_count},
         """
-        event_index[fn_count] = [f"{cat}",f"{fn}"]
+        event_index[fn_count] = [f"{cat}",f"{func}"]
         fn_count+=1
 
 bpf_events_enum = bpf_events_enum.replace("EVENT_TYPES", event_type_enum)
@@ -775,6 +782,10 @@ for cat, functions in kprobe_functions.items():
                 fnname = fn
                 b.attach_kprobe(event=fnname, fn_name=f"entry_trace_{fn}")
                 b.attach_kretprobe(event=fnname, fn_name=f"exit_trace_{fn}")
+            elif cat in ["vfs"]:
+                fnname = fn
+                b.attach_kprobe(event_re=fnname, fn_name=f"entry_trace_{cat}")
+                b.attach_kretprobe(event_re=fnname, fn_name=f"exit_trace_{cat}")
             elif cat in ["c", "mpi"]:
                 library = cat
                 if cat in so_dict:
@@ -832,16 +843,8 @@ class OpenAtEventBegin(GenericStartEvent):
     ]
 class OpenAtEventEnd(GenericEndEvent):
     _fields_ = [
-        ('ret', ctypes.c_int),
+        ('fd', ctypes.c_int),
     ]
-
-class OpenEventBegin(GenericStartEvent):
-    _fields_ = [
-        ('flags', ctypes.c_int),
-        ('fname', ctypes.c_char * NAME_MAX), 
-    ]
-class OpenEventEnd(OpenAtEventEnd):
-    pass
 
 class OpenEventBegin(GenericStartEvent):
     _fields_ = [
@@ -853,27 +856,33 @@ class OpenEventEnd(OpenAtEventEnd):
 
 class CloseEventBegin(GenericStartEvent):
     _fields_ = [
-        ('fname', ctypes.c_char * NAME_MAX), 
+        ('fd', ctypes.c_int),
     ]
-class CloseEventEnd(OpenAtEventEnd):
-    pass
+class CloseEventEnd(GenericEndEvent):
+    _fields_ = [
+        ('ret', ctypes.c_int),
+    ]
 
 class RWEventBegin(GenericStartEvent):
     _fields_ = [
-        ('count', ctypes.c_int),
-        ('fname', ctypes.c_char * NAME_MAX), 
+        ('count', ctypes.c_uint64),
+        ('fd', ctypes.c_int), 
     ]
-class RWEventEnd(OpenAtEventEnd):
-    pass
+class RWEventEnd(GenericEndEvent):
+    _fields_ = [
+        ('size', ctypes.c_int64),
+    ]
 
 class PRWEventBegin(GenericStartEvent):
     _fields_ = [
-        ('count', ctypes.c_int),
+        ('count', ctypes.c_uint64),
         ('offset', ctypes.c_int64),
-        ('fname', ctypes.c_char * NAME_MAX), 
+         ('fd', ctypes.c_int), 
     ]
-class PRWEventEnd(OpenAtEventEnd):
-    pass
+class PRWEventEnd(GenericEndEvent):
+    _fields_ = [
+        ('size', ctypes.c_int64),
+    ]
 
 
 
@@ -901,10 +910,10 @@ def handle_event(begin, end):
         "ts":   begin.ts,
         "dur":  end.ts - begin.ts,
         "ph":   "X",
-        "pid":  begin.id >> 32,
-        "tid":  begin.id & 0xffffff,
-        "name": event_index[begin.name][0] + " " +event_index[begin.name][1],
-        "cat": event_index[begin.name][0],
+        "pid":  end.id >> 32,
+        "tid":  end.id & 0xffffff,
+        "name": event_index[end.name][0] + " " +event_index[end.name][1],
+        "cat": event_index[end.name][0],
         "args": {
         }
     }
@@ -912,23 +921,23 @@ def handle_event(begin, end):
         obj["args"]["fname"] = begin.fname.decode()
         obj["args"]["dfd"] = begin.dfd
         obj["args"]["flags"] = begin.flags
-        obj["args"]["ret"] = end.ret
+        obj["args"]["fd"] = end.fd
     elif begin.name in open_fn_idx:
         obj["args"]["fname"] = begin.fname.decode()
         obj["args"]["flags"] = begin.flags
-        obj["args"]["ret"] = end.ret
+        obj["args"]["fd"] = end.fd
     elif begin.name in close_fn_idx:
-        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["fd"] = begin.fd
         obj["args"]["ret"] = end.ret
     elif begin.name in read_fn_idx or  begin.name in write_fn_idx:
-        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["fd"] = begin.fd
         obj["args"]["count"] = begin.count
-        obj["args"]["ret"] = end.ret
+        obj["args"]["size"] = end.size
     elif begin.name in pread_fn_idx or  begin.name in pwrite_fn_idx:
-        obj["args"]["fname"] = begin.fname.decode()
+        obj["args"]["fd"] = begin.fd
         obj["args"]["count"] = begin.count
         obj["args"]["offset"] = begin.offset
-        obj["args"]["ret"] = end.ret
+        obj["args"]["size"] = end.size
     index += 1
     return obj
 

@@ -1,5 +1,7 @@
+#include <assert.h>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 #include <mpi.h>
 #include <stdio.h>
@@ -51,31 +53,41 @@ int main(int argc, char *argv[]) {
   std::string dir = std::string(argv[4]);
   int trace = atoi(argv[5]);
   std::string data = gen_random(ts);
-  auto read_data = std::vector<char>(ts);
+  char *read_data = (char *)malloc(ts);
   Timer open_timer = Timer();
   Timer write_timer = Timer();
   Timer read_timer = Timer();
   Timer close_timer = Timer();
   for (int file_idx = 0; file_idx < files; ++file_idx) {
 
-    std::string filename = dir + "/file_" + std::to_string(file_idx) + ".dat";
+    std::string filename = dir + "/file_" + std::to_string(file_idx) + "_" +
+                           std::to_string(my_rank) + ".dat";
 
     open_timer.resumeTime();
-    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 777);
+    int fd = open(filename.c_str(), O_RDWR | O_CREAT | O_TRUNC, 777);
+    assert(fd != -1);
     open_timer.pauseTime();
     for (int op_idx = 0; op_idx < ops; ++op_idx) {
       write_timer.resumeTime();
-      write(fd, data.c_str(), ts);
+      assert(write(fd, data.c_str(), ts) == ts);
       write_timer.pauseTime();
-      lseek(fd, -1 * ts, SEEK_CUR);
+      lseek(fd, (off_t)op_idx * ts, SEEK_SET);
       read_timer.resumeTime();
-      read(fd, read_data.data(), ts);
+      auto read_bytes = read(fd, read_data, ts);
+      if (read_bytes != ts) {
+        if (read_bytes == -1)
+          printf("Error reading %d: %s\n", errno, strerror(errno));
+        else
+          printf("read only %ld bytes", read_bytes);
+        exit(1);
+      }
       read_timer.pauseTime();
     }
     close_timer.resumeTime();
     close(fd);
     close_timer.pauseTime();
   }
+  free(read_data);
   double open_time = open_timer.getElapsedTime();
   double total_open_time;
   MPI_Reduce(&open_time, &total_open_time, 1, MPI_DOUBLE, MPI_SUM, 0,
