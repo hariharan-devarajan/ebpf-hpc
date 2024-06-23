@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import argparse
 import pathlib
+import logging
+import json
 
 from bcc import ArgString, BPF, USDT
 from bcc.utils import printb
@@ -29,7 +31,7 @@ bpf_text = """
 #include <uapi/linux/ptrace.h>
 struct key_t {
     u64 ip;
-    u32 pid;
+    s64 pid;
 };
 BPF_HASH(fn_map, struct key_t, u64, 256);
 BPF_HASH(pid_map, u32, u64);
@@ -48,6 +50,10 @@ int trace_dftracer_remove_pid(struct pt_regs *ctx) {
     u32 pid = id;
     bpf_trace_printk(\"Stop tracing PID \%d\",pid);
     pid_map.delete(&pid);
+    struct key_t key = {};
+    key.pid = -1;
+    u64 zero = 1000;
+    u64* value = fn_map.lookup_or_init(&key, &zero);
     return 0;
 }
 
@@ -223,9 +229,21 @@ for cat, fns in functions.items():
                 library = so_dict[cat]
             b.attach_uprobe(name=library, sym=fn, fn_name=f"do_count")
 
-print("\n%-16s %-26s %-26s %8s" % ("INTERVAL", "PID", "FUNC", "COUNT"))
+try:
+    os.remove("profile.pfw")
+except OSError:
+    pass
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("profile.pfw", mode="a", encoding="utf-8"),
+    ],
+    format="%(message)s",
+)
+logging.info("[")
 count = 0
 exiting = False
+print("Ready to run code")
 while True:
     has_events = False
     try:
@@ -235,13 +253,28 @@ while True:
     counts = b.get_table("fn_map")
 
     for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
-        fname = b.sym(k.ip, k.pid).decode()
+        if k.pid == -1 and v.value == 1000:
+            exiting = True
+            continue
+        fname = b.sym(k.ip, k.pid, show_module=True).decode()
         if "unknown" in fname:
-            fname = b.ksym(k.ip).decode()
-        print("%9d-%9d-%8s-%9d" % (count * args.interval, k.pid, fname, v.value))
-        has_events = count
+            fname = b.ksym(k.ip, show_module=True).decode()
+        if "unknown" in fname:
+            cat = "unknown"
+        else:
+            cat = fname.split(" ")[1]
+        obj = {
+            "pid": k.pid,
+            "tid": 0,
+            "name": fname,
+            "cat": cat,
+            "ph": "C",
+            "ts": count * args.interval,
+            "args": {"count": v.value},
+        }
+        logging.info(json.dumps(obj))
     counts.clear()
     count += 1
-    if exiting or (count - has_events > 10):
+    if exiting:
         print("Detaching...")
         exit()
