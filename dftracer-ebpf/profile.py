@@ -64,10 +64,11 @@ int do_count(struct pt_regs *ctx) {
     u64* start_ts = pid_map.lookup(&pid);
     if (start_ts == 0)                                      
         return 0;
-    u64 zero = 0;
+    
     struct key_t key = {};
     key.pid = pid;
     key.ip = PT_REGS_IP(ctx);
+    u64 zero = 0;
     u64* value = fn_map.lookup_or_init(&key, &zero);
     ++(*value);
     return 0;

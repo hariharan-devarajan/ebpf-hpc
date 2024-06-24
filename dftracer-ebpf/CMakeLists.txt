@@ -7,5 +7,5 @@ add_library(${PROJECT_NAME} SHARED ${DFT_EBPF_SRC})
 
 find_package(MPI COMPONENTS CXX REQUIRED)
 include_directories(${MPI_CXX_INCLUDE_DIRS})
-add_executable(test test.cpp)
-target_link_libraries(test ${MPI_CXX_LIBRARIES})
+add_executable(df_tracer_test test.cpp)
+target_link_libraries(df_tracer_test ${MPI_CXX_LIBRARIES})
