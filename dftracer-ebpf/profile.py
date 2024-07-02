@@ -6,6 +6,7 @@ import argparse
 import pathlib
 import logging
 import json
+import ctypes
 
 from bcc import ArgString, BPF, USDT
 from bcc.utils import printb
@@ -25,22 +26,38 @@ parser.add_argument(
 args = parser.parse_args()
 
 TASK_COMM_LEN = 16
+INTERVAL_RANGE = int(1e9)
 bpf_text = """
 #include <linux/sched.h>
 #include <uapi/linux/limits.h>
 #include <uapi/linux/ptrace.h>
-struct key_t {
-    u64 ip;
-    s64 pid;
-};
-BPF_HASH(fn_map, struct key_t, u64, 256);
+
 BPF_HASH(pid_map, u32, u64);
 
+struct stats_key_t {
+    u64 trange;
+    u64 id;
+    u64 ip;
+};
+struct stats_t {
+    u64 time;
+    s64 count;
+};
+struct fn_key_t {
+    s64 pid;
+};
+struct fn_t {
+    u64 ip;
+    u64 ts;
+};
+BPF_HASH(fn_pid_map, struct fn_key_t, struct fn_t);
+
+BPF_HASH(fn_map, struct stats_key_t, struct stats_t, 2 << 16);
 
 int trace_dftracer_get_pid(struct pt_regs *ctx) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id;
-    u64 tsp = bpf_ktime_get_ns() / 1000;
+    u64 tsp = bpf_ktime_get_ns();
     bpf_trace_printk(\"Tracing PID \%d\",pid);
     pid_map.update(&pid, &tsp);
     return 0;
@@ -50,27 +67,51 @@ int trace_dftracer_remove_pid(struct pt_regs *ctx) {
     u32 pid = id;
     bpf_trace_printk(\"Stop tracing PID \%d\",pid);
     pid_map.delete(&pid);
-    struct key_t key = {};
-    key.pid = -1;
-    u64 zero = 1000;
-    u64* value = fn_map.lookup_or_init(&key, &zero);
+    struct stats_key_t key = {};
+    key.id = 0;
+    key.trange = 0;
+    key.ip = 0;
+    struct stats_t zero_stats = {};
+    zero_stats.count = 1000;
+    fn_map.lookup_or_init(&key, &zero_stats);
     return 0;
 }
 
 
-int do_count(struct pt_regs *ctx) {
+int do_count_entry(struct pt_regs *ctx) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id;
     u64* start_ts = pid_map.lookup(&pid);
     if (start_ts == 0)                                      
         return 0;
     
-    struct key_t key = {};
+    struct fn_key_t key = {};
     key.pid = pid;
-    key.ip = PT_REGS_IP(ctx);
-    u64 zero = 0;
-    u64* value = fn_map.lookup_or_init(&key, &zero);
-    ++(*value);
+    struct fn_t fn = {};
+    fn.ip = PT_REGS_IP(ctx);
+    fn.ts = bpf_ktime_get_ns();
+    fn_pid_map.update(&key, &fn);
+    return 0;
+}
+
+int do_count_exit(struct pt_regs *ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id;
+    u64* start_ts = pid_map.lookup(&pid);
+    if (start_ts == 0)                                      
+        return 0;
+    struct fn_key_t key = {};
+    key.pid = pid;
+    struct fn_t *fn = fn_pid_map.lookup(&key);
+    if (fn == 0) return 0; // missed entry
+    struct stats_key_t stats_key = {};
+    stats_key.trange = (fn->ts  - *start_ts) / INTERVAL_RANGE;
+    stats_key.ip = fn->ip;
+    stats_key.id = id;
+    struct stats_t zero_stats = {};
+    struct stats_t *stats = fn_map.lookup_or_init(&stats_key, &zero_stats);
+    stats->time += bpf_ktime_get_ns() - fn->ts;
+    stats->count++;
     return 0;
 }
 """
@@ -200,6 +241,8 @@ functions = {
 }
 # load BPF program
 
+bpf_text = bpf_text.replace("INTERVAL_RANGE", str(INTERVAL_RANGE))
+
 dir = pathlib.Path(__file__).parent.resolve()
 usdt_ctx = USDT(path=f"{dir}/build/libdftracer_ebpf.so")
 f = open("profile.c", "w")
@@ -221,14 +264,17 @@ for cat, fns in functions.items():
     for fn in fns:
         if "sys" in cat:
             fnname = b.get_syscall_prefix().decode() + fn
-            b.attach_kprobe(event_re=fnname, fn_name=f"do_count")
+            b.attach_kprobe(event_re=fnname, fn_name=f"do_count_entry")
+            b.attach_kretprobe(event_re=fnname, fn_name=f"do_count_exit")
         elif cat in ["os_cache", "ext4", "vfs"]:
-            b.attach_kprobe(event_re=fn, fn_name=f"do_count")
+            b.attach_kprobe(event_re=fn, fn_name=f"do_count_entry")
+            b.attach_kretprobe(event_re=fn, fn_name=f"do_count_exit")
         elif cat in ["c"]:
             library = cat
             if cat in so_dict:
                 library = so_dict[cat]
-            b.attach_uprobe(name=library, sym=fn, fn_name=f"do_count")
+            b.attach_uprobe(name=library, sym=fn, fn_name=f"do_count_entry")
+            b.attach_uretprobe(name=library, sym=fn, fn_name=f"do_count_exit")
 
 try:
     os.remove("profile.pfw")
@@ -253,11 +299,14 @@ while True:
         exiting = True
     counts = b.get_table("fn_map")
 
-    for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
-        if k.pid == -1 and v.value == 1000:
+    for k, v in reversed(sorted(counts.items_lookup_and_delete_batch(),
+                                key=lambda counts: counts[1].time)):
+        pid = ctypes.c_uint32(k.id).value
+        tid = ctypes.c_uint32(k.id >> 32).value
+        if pid == 0 and k.trange == 0 and k.ip == 0 and v.count == 1000:
             exiting = True
             continue
-        fname = b.sym(k.ip, k.pid, show_module=True).decode()
+        fname = b.sym(k.ip, pid, show_module=True).decode()
         if "unknown" in fname:
             fname = b.ksym(k.ip, show_module=True).decode()
         if "unknown" in fname:
@@ -265,13 +314,13 @@ while True:
         else:
             cat = fname.split(" ")[1]
         obj = {
-            "pid": k.pid,
-            "tid": 0,
+            "pid": pid,
+            "tid": tid,
             "name": fname,
             "cat": cat,
             "ph": "C",
-            "ts": count * args.interval,
-            "args": {"count": v.value},
+            "ts": k.trange,
+            "args": {"count": v.count, "time": v.time},
         }
         logging.info(json.dumps(obj))
     counts.clear()
