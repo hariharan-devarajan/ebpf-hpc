@@ -323,7 +323,6 @@ while True:
             "args": {"count": v.count, "time": v.time},
         }
         logging.info(json.dumps(obj))
-    counts.clear()
     count += 1
     if exiting:
         print("Detaching...")
