@@ -26,7 +26,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 TASK_COMM_LEN = 16
-INTERVAL_RANGE = int(1e9)
+INTERVAL_RANGE = int(args.interval * 1e9)
 bpf_text = """
 #include <linux/sched.h>
 #include <uapi/linux/limits.h>
